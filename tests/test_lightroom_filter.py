@@ -221,3 +221,25 @@ def test_from_options_unknown_flag_and_orientation_use_defaults():
     f = lf.filter_from_options({'flag': 'bogus', 'orientation': 'diagonal'})
     assert f.flag == 'not_rejected' and f.orientation == 'any'
     assert lf.filter_from_options({'flag': 'any'}).flag == 'any'
+
+
+def test_folder_is_the_album_path():
+    assert run([photo('a', albums=('C2',))])[0].folder == 'Trips/Sub/Deep'
+    assert run([photo('a', albums=('C2',))], prefix='LR')[0].folder == 'LR/Trips/Sub/Deep'
+    assert run([photo('a', albums=('A1',))])[0].folder == 'Zebra'
+
+
+def test_album_path_segments_are_safe():
+    albums = {'S': album('S', 'a/b', is_set=True), 'C': album('C', '@x', 'S')}
+    assert run([photo('a', albums=('C',))], albums=albums)[0].folder == 'a_b/x'
+
+
+def test_album_named_like_a_set_takes_a_suffix():
+    albums = {'S': album('S', 'Iceland', is_set=True), 'C': album('C', 'Day', 'S'), 'D': album('D', 'Iceland')}
+    out = run([photo('a', albums=('C',)), photo('b', albums=('D',))], albums=albums)
+    assert [p.folder for p in out] == ['Iceland/Day', 'Iceland-2']
+
+
+def test_missing_parent_ends_the_path():
+    albums = {'C': album('C', 'Lonely', 'gone')}
+    assert run([photo('a', albums=('C',))], albums=albums)[0].folder == 'Lonely'

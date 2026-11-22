@@ -81,6 +81,36 @@ def folder_name(name: str) -> str:
     return sanitize_name(name).lstrip('@') or 'album'
 
 
+def album_path(album_id: str, albums: dict[str, Album]) -> str:
+    """The album's path in the album tree: its parent sets' safe names, outermost first, then its own.
+
+    A parent missing from `albums`, or a loop in the parents, ends the walk there.
+    """
+    parts, seen, cur = [], set(), album_id
+    while cur in albums and cur not in seen:
+        seen.add(cur)
+        parts.append(folder_name(albums[cur].name))
+        cur = albums[cur].parent_id
+    return '/'.join(reversed(parts))
+
+
+def _album_folders(albums: dict[str, Album]) -> dict[str, str]:
+    """Album id -> tree path; an album whose path is a set's takes the next free suffix, so an
+    album folder never holds another album's folder."""
+    set_paths = {album_path(i, albums) for i, a in albums.items() if a.is_set}
+    out = {}
+    for i, a in albums.items():
+        if a.is_set:
+            continue
+        path = candidate = album_path(i, albums)
+        n = 1
+        while candidate in set_paths:
+            n += 1
+            candidate = f'{path}-{n}'
+        out[i] = candidate
+    return out
+
+
 def _years_back(today: date, years: int) -> date:
     try:
         return today.replace(year=today.year - years)
@@ -150,6 +180,7 @@ def place(photos: Iterable[Photo], f: Filter, albums: dict[str, Album], prefix: 
     exclude = _expand(f.albums_exclude, albums)
     collections = {i for i, a in albums.items() if not a.is_set}
     allowed = ((include & collections) if include else collections) - exclude
+    paths = _album_folders(albums)
 
     def folder(name: str) -> str:
         return f'{prefix}/{name}' if prefix else name
@@ -167,5 +198,5 @@ def place(photos: Iterable[Photo], f: Filter, albums: dict[str, Album], prefix: 
         if not eligible:
             continue
         a = min(eligible, key=lambda x: (x.name.casefold(), x.id))
-        out.append(Placed(p, a.id, folder(folder_name(a.name))))
+        out.append(Placed(p, a.id, folder(paths[a.id])))
     return out
