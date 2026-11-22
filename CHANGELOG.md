@@ -1,5 +1,9 @@
 # Changes
 
+## Unreleased
+
+- Photos keep their colour profile (ICC); wide-gamut photos, such as iPhone originals, no longer shift in colour.
+
 ## 0.1.2 — 2026-11-21
 
 - Own brand icon (a photo frame), with dark variants and @2x sizes, in place of the Frame icon.
