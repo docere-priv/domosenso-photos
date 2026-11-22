@@ -325,7 +325,8 @@ sync there is no library to count; Save still applies the filter.
   again, a photo moved to another album moves, and one that no longer passes the filter or leaves
   the library is removed.
 - A rendition that cannot be fetched or decoded is skipped, counted in `skipped_count` and tried
-  again after a day.
+  again after a day. Only the date, camera, lens and exposure tags above are written; anything else
+  a rendition carries (serial numbers, maker notes, location) is dropped.
 
 ### Resolution
 
@@ -349,6 +350,9 @@ files in them stay.
   its own folders next to the other tool's with a `-2` suffix. Use a separate photo folder (or a
   subfolder) until the other tool is stopped and its files are removed. Files written by another
   tool are not taken over.
+- **Synology albums in the same photo folder.** Give Lightroom a subfolder (set at setup), so its
+  album folders and the Synology ones never meet. A Lightroom folder that holds any subfolder is
+  never renamed or removed; its own photos still sync.
 - Repair issues name no folders, because Home Assistant includes repair issues in diagnostics
   downloads; they point to the sensor attributes instead.
 
@@ -365,7 +369,8 @@ A sync that would remove or move most of what it manages waits instead. Nothing 
 
 If the change is intended, use **Configure → Sync now → Confirm held changes**, or the action
 `domosenso_photos.lightroom_sync` with `confirm: true`. A confirmation applies to a hold that exists
-when it is given. A filter change that removes more than half asks for it after Save; the preview
+when it is given, and only to that hold: if the sync then finds another reason to hold (for example
+the library suddenly lists no photos), it waits again. A held sync renames no folder either. A filter change that removes more than half asks for it after Save; the preview
 shows it first.
 
 ### Settings, schedule and status
@@ -381,8 +386,11 @@ shows it first.
 
 The library is synced about 60 seconds after Home Assistant starts, every interval, after a
 filter is saved and on demand. Adobe is asked for at most one request every 0.2 s; a `429` or `5xx`
-answer is retried with back-off (honouring `Retry-After`), and then the sync ends with
-`unreachable` and changes nothing.
+answer, or a network error, is retried with back-off (honouring `Retry-After`, at most 300 s). If
+reading the library still fails, the sync ends with `unreachable` and changes nothing. A photo
+whose rendition still fails is skipped like any rendition that cannot be fetched; when 5
+renditions in a row fail that way, Adobe is taken to be down: the sync stops with `unreachable`,
+keeping the photos it wrote so far, and the next sync continues.
 
 The sensor `sensor.domosenso_photos_lightroom` (a second library gets a number) has the sync
 status as its state: `ok`, `syncing`, `awaiting_confirmation`, `unreachable`, `disk_full` or
@@ -509,6 +517,13 @@ The last line is `albums smoke ok` with exit code 0; a failed check prints
 `albums smoke failed: <reason>` and exits 1. Set `ALBUMS_SMOKE_DEBUG=1` (`-e` on `docker run`) to
 keep Home Assistant's log output.
 
+`-e ALBUMS_SMOKE_OFFLINE=1` on a network without internet access checks that the entry still
+loads when the install fails and that HEIC then uses the thumbnail. Use an internal Docker network
+(`docker network create --internal albums-smoke-offline`, then `--network albums-smoke-offline`);
+with `--network none` the container has no IPv4 address and Home Assistant cannot create any HTTP
+client session, which is unrelated to `pillow-heif`. The failing install takes about three
+minutes before the test continues.
+
 `tests/lightroom_ha_smoke.py` does the same for the Lightroom source, against a fake Adobe IMS and
 Lightroom on `127.0.0.1`. The library is invented: 30 assets in three albums, two of them inside a
 set, plus two unfiled assets. The smoke points `application_credentials.AUTHORIZE_URL` /
@@ -516,7 +531,7 @@ set, plus two unfiled assets. The smoke points `application_credentials.AUTHORIZ
 Assistant's callback view does. It covers:
 
 - the config flow and a second entry for the same account;
-- the first sync (folders, markers, EXIF, no GPS);
+- the first sync (folders, markers, EXIF, no GPS, serial numbers or maker notes);
 - the filter options with their preview, a held mass removal and its confirmation;
 - an edit re-downloading one photo, and a missing rendition skipped;
 - ambiguous and colliding folders, and what their issues leave out of the diagnostics download;
@@ -540,13 +555,6 @@ rm -rf "$HA_SMOKE_CONFIG"
 
 The last line is `lightroom smoke ok` with exit code 0; a failed check prints
 `lightroom smoke failed: <reason>` and exits 1. `LIGHTROOM_SMOKE_DEBUG=1` keeps the log output.
-
-`-e ALBUMS_SMOKE_OFFLINE=1` on a network without internet access checks that the entry still
-loads when the install fails and that HEIC then uses the thumbnail. Use an internal Docker network
-(`docker network create --internal albums-smoke-offline`, then `--network albums-smoke-offline`);
-with `--network none` the container has no IPv4 address and Home Assistant cannot create any HTTP
-client session, which is unrelated to `pillow-heif`. The failing install takes about three
-minutes before the test continues.
 
 ## Credits
 

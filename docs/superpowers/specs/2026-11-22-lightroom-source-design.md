@@ -194,7 +194,7 @@ All set conditions must hold (AND). Empty means "no condition".
 
 ### Ownership and changes
 
-- Each Lightroom folder gets the usual `.sync.json` marker: `{"owner": "lightroom:<account id>",
+- Each Lightroom folder gets the usual `.sync.json` marker: `{"owner": "lightroom:<first 16 hex of sha256(account id)>",
   "kind": "lightroom", "items": {"<asset id>": {"name": "...", "changed": "..."}}, "last_sync": ...}`.
   The Synology marker keeps `album_id`; `resolve_path`/`_owned` learn to read `owner` too.
 - The source record (in the entry's Store) lists its folders: album id (or `YYYY-MM`) → path.

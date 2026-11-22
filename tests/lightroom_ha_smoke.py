@@ -6,7 +6,7 @@ cameras. The fake Lightroom answers 405 to anything but GET, and the smoke ends 
 never got one. A small fake Synology share runs on the same server so an albums entry can sync
 alongside. Set LIGHTROOM_SMOKE_DEBUG=1 to keep Home Assistant's log output.
 """
-import asyncio, base64, importlib, io, json, logging, os, shutil, time, traceback
+import asyncio, base64, hashlib, importlib, io, json, logging, os, shutil, time, traceback
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -62,12 +62,22 @@ def refresh_jwt(days):
     return jwt({'created_at': str(int(time.time() * 1000)), 'expires_in': str(days * 86400 * 1000)})
 
 
-def jpeg(color, gps=True):
-    """A rendition as the fake serves it; with GPS so the smoke can show it is stripped."""
+PRIVATE_TAGS = {0xA431: 'BODY-0001', 0xA435: 'LENS-0002', 0x927C: b'maker-note'}  # serials, MakerNote
+FULLSIZE = 'as00'  # the one asset with a full-size rendition: it kept the original's private tags
+
+
+def owner(account):
+    return 'lightroom:' + hashlib.sha256(account.encode()).hexdigest()[:16]
+
+
+def jpeg(color, gps=True, private=False):
+    """A rendition as the fake serves it; with GPS (and the private tags) so the smoke can show they are stripped."""
     exif = Image.Exif()
     if gps:
         g = exif.get_ifd(GPS_IFD)
         g[1], g[2], g[3], g[4] = 'N', (46.0, 1.0, 0.0), 'E', (7.0, 2.0, 0.0)
+    if private:
+        exif.get_ifd(EXIF_IFD).update(PRIVATE_TAGS)
     out = io.BytesIO()
     Image.new('RGB', (64, 48), color).save(out, format='JPEG', exif=exif.tobytes())
     return out.getvalue()
@@ -153,11 +163,12 @@ class FakeAdobe:
             return self.json(body)
         if len(parts) == 8 and parts[6] == 'renditions':
             aid = parts[5]
-            if parts[7] == 'fullsize' or aid in self.missing:  # no full-size rendition was ever generated
+            full = parts[7] == 'fullsize'
+            if aid in self.missing or (full and aid != FULLSIZE):  # no full-size rendition was ever generated
                 self.renditions.append((aid, 404))
                 return web.Response(status=404)
             self.renditions.append((aid, 200))
-            return web.Response(body=jpeg(self.colors.get(aid, (20, 120, 40))), content_type='image/jpeg')
+            return web.Response(body=jpeg(self.colors.get(aid, (20, 120, 40)), private=full), content_type='image/jpeg')
         return web.Response(status=404)
 
     def fetched(self):
@@ -397,7 +408,7 @@ async def main():
         album_key = {f'lr/{NAMES[LAKE]}': LAKE, f'lr/{NAMES[PEAKS]}-2': PEAKS, f'lr/{NAMES[GARDEN]}': GARDEN}
         for path, names in expected.items():
             marker = json.loads((photo_dir / path / '.sync.json').read_text())
-            check(marker['owner'] == 'lightroom:acct-one' and marker['kind'] == 'lightroom' and marker['path'] == path
+            check(marker['owner'] == owner('acct-one') and marker['kind'] == 'lightroom' and marker['path'] == path
                   and marker['key'] == album_key.get(path, path.removeprefix('lr/'))
                   and {v['name'] for v in marker['items'].values()} == names, f'marker {path}: {marker}')
             for name in names:
@@ -409,7 +420,10 @@ async def main():
                     taken = asset['payload']['captureDate'][:19].replace('-', ':').replace('T', ' ')
                     check(exif.get_ifd(EXIF_IFD).get(36867) == taken, f'DateTimeOriginal {path}/{name}')
                     check(not exif.get_ifd(GPS_IFD), f'GPS kept in {path}/{name}')
+                    check(not set(PRIVATE_TAGS) & set(exif.get_ifd(EXIF_IFD)), f'serial or MakerNote kept in {path}/{name}')
         check(sorted(fake.fetched()) == sorted(n[11:-4] for ns in expected.values() for n in ns), 'renditions fetched')
+        check((FULLSIZE, 200) in fake.renditions and any(n[11:-4] == FULLSIZE for ns in expected.values() for n in ns),
+              'the full-size rendition was not used')
         await hass.async_block_till_done()
         state = hass.states.get('sensor.domosenso_photos_lightroom')
         check(state is not None and state.state == 'ok' and state.attributes['photos'] == count, f'sensor {state}')
@@ -558,7 +572,7 @@ async def main():
         check(sorted((x['entry_id'], x['status']) for x in libs) == sorted([(entry.entry_id, 'ok'), (entry2.entry_id, 'ok')])
               and files(photo_dir, 'lr2') == {k.replace('lr/', 'lr2/').replace('-2', ''): v for k, v in expected.items()},
               f'two libraries {libs} {files(photo_dir, "lr2")}')
-        check(json.loads((photo_dir / 'lr2' / NAMES[LAKE] / '.sync.json').read_text())['owner'] == 'lightroom:acct-two', 'second owner')
+        check(json.loads((photo_dir / 'lr2' / NAMES[LAKE] / '.sync.json').read_text())['owner'] == owner('acct-two'), 'second owner')
         check(files(photo_dir) == expected, 'the second account touched the first one\'s folders')
         prevs = (await call('lightroom_preview'))['libraries']
         check(len(prevs) == 2 and all(p['kept'] == count for p in prevs), f'two previews {prevs}')
@@ -585,7 +599,7 @@ async def main():
         await wait_for(lambda: manager.lock.locked(), 'sync did not start')
         check(await hass.config_entries.async_unload(entry.entry_id), 'unload during sync failed')
         outcome = await running
-        check(isinstance(outcome, BaseException), f'sync finished instead of being cancelled: {outcome}')
+        check(isinstance(outcome, asyncio.CancelledError), f'sync finished instead of being cancelled: {outcome}')
         check(store_path.read_bytes() == stored, 'store changed by a cancelled sync')
         check(not hass.services.has_service(DOMAIN, 'lightroom_sync') and not hass.services.has_service(DOMAIN, 'lightroom_preview'),
               'actions kept after the last Lightroom entry unloaded')
