@@ -128,13 +128,19 @@
       },
       "lightroom_settings": {
         "title": "Lightroom-Einstellungen",
-        "description": "Fotoordner und Unterordner wurden beim Hinzufügen der Bibliothek festgelegt.",
+        "description": "Eine Änderung des Fotoordners oder des Unterordners muss zuerst bestätigt werden.",
         "data": {
+          "photo_dir": "Fotoordner",
+          "prefix": "Unterordner",
           "interval_min": "Synchronisierungsintervall",
           "max_edge": "Längste Kante",
           "quality": "JPEG-Qualität",
           "free_floor_gb": "Freier Speicher, der bleiben muss"
         }
+      },
+      "lightroom_folder_confirm": {
+        "title": "Fotoordner ändern",
+        "description": "Die Fotos werden in {new} synchronisiert. Jedes Foto wird erneut heruntergeladen, außer der Ordner enthält bereits die Fotos dieser Bibliothek. Die Fotos in {old} bleiben, wo sie sind: Die Integration löscht sie nicht. Absenden ändert den Ordner."
       },
       "filter": {
         "title": "Filter",
@@ -197,7 +203,10 @@
       "share_error": "Die erste Synchronisierung dieses Albums ist fehlgeschlagen. Prüfen Sie den Link, den Fotoordner und den freien Speicherplatz und versuchen Sie es erneut.",
       "invalid_years": "Geben Sie eine ganze Zahl von 1 bis 50 ein oder lassen Sie das Feld leer.",
       "invalid_range": "Dieses Datum liegt vor dem Anfangsdatum.",
-      "ratings_empty": "Wählen Sie mindestens eine Bewertung."
+      "ratings_empty": "Wählen Sie mindestens eine Bewertung.",
+      "invalid_photo_dir": "Geben Sie den absoluten Pfad eines vorhandenen Ordners ein, zum Beispiel /config/www/ramka.",
+      "invalid_prefix": "Geben Sie einen Ordner innerhalb des Fotoordners ohne ..-Teile an oder lassen Sie das Feld leer.",
+      "sync_running": "Eine Synchronisierung läuft. Versuche es erneut, wenn sie beendet ist."
     },
     "abort": {
       "not_loaded": "DomoSenso Photos ist nicht geladen. Laden Sie die Integration neu und versuchen Sie es erneut.",

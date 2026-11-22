@@ -333,9 +333,11 @@ class LightroomManager:
 
 
 async def _options_changed(hass, entry) -> None:
-    """Reload for an options change only; a refreshed token also updates the entry."""
+    """Reload for an options or folder change only; a refreshed token also updates the entry."""
     manager = getattr(entry, 'runtime_data', None)
-    if manager is None or dict(entry.options) != manager.options_seen:
+    if (manager is None or dict(entry.options) != manager.options_seen
+            or Path(entry.data['photo_dir']) != manager.photo_dir
+            or (entry.data.get('prefix') or '') != manager.prefix):
         hass.data.setdefault(SYNC_ON_START, set()).add(entry.entry_id)  # "after Save": sync at once
         await hass.config_entries.async_reload(entry.entry_id)
 

@@ -554,6 +554,48 @@ async def main():
         check('ambiguous_folders' not in issues() and files(photo_dir) == expected and not moved.exists(),
               f'moved folder not adopted back {files(photo_dir)}')
 
+        # --- Settings: the folder can change after a confirmation; the old folder is left as it is.
+        async def settings_flow(values):
+            o = await hass.config_entries.options.async_init(entry.entry_id)
+            o = await hass.config_entries.options.async_configure(o['flow_id'], {'next_step_id': 'settings'})
+            check(o['type'] == 'form' and o['step_id'] == 'lightroom_settings', f'settings form {o}')
+            return await hass.config_entries.options.async_configure(o['flow_id'], {
+                'photo_dir': str(photo_dir), 'prefix': 'lr', 'interval_min': entry.options['interval_min'],
+                'max_edge': entry.options['max_edge'], 'quality': entry.options['quality'],
+                'free_floor_gb': entry.options['free_floor'] / 1e9, **values})
+
+        old = entry.runtime_data
+        r = await settings_flow({})
+        check(r['type'] == 'create_entry' and entry.runtime_data is old, f'unchanged settings {r}')
+        r = await settings_flow({'photo_dir': str(photo_dir / 'missing')})
+        check(r['type'] == 'form' and r['errors'] == {'photo_dir': 'invalid_photo_dir'}, f'missing folder accepted {r}')
+        other = Path(config_dir, 'www', 'lr-other')
+        other.mkdir()
+        async with entry.runtime_data.lock:
+            r = await settings_flow({'photo_dir': str(other)})
+        check(r['type'] == 'form' and r['step_id'] == 'lightroom_settings' and r['errors'] == {'base': 'sync_running'}
+              and entry.data['photo_dir'] == str(photo_dir), f'folder change during a sync {r}')
+        before = tree(photo_dir / 'lr')
+        r = await settings_flow({'photo_dir': str(other), 'prefix': '', 'interval_min': 120})
+        check(r['type'] == 'form' and r['step_id'] == 'lightroom_folder_confirm'
+              and r['description_placeholders'] == {'old': f'{photo_dir}/lr', 'new': str(other)}, f'confirm step {r}')
+        check(entry.data['photo_dir'] == str(photo_dir), 'the folder changed before the confirmation')
+        r = await hass.config_entries.options.async_configure(r['flow_id'], {})
+        check(r['type'] == 'create_entry' and entry.data['photo_dir'] == str(other) and entry.data['prefix'] == ''
+              and entry.options['interval_min'] == 120, f'folder change {r} {entry.data.get("photo_dir")}')
+        in_other = {k.removeprefix('lr/').replace('-2', ''): v for k, v in expected.items()}
+        m = await synced(entry, old, lambda m: {k.lstrip('/'): v for k, v in files(other, '').items()} == in_other,
+                         f'new folder {files(other, "")}')
+        check(m.data['counts']['added'] == sum(map(len, expected.values())) and tree(photo_dir / 'lr') == before, 'old folder touched or not all downloaded')
+        old = m
+        r = await settings_flow({'interval_min': 360})
+        check(r['type'] == 'form' and r['step_id'] == 'lightroom_folder_confirm', f'confirm back {r}')
+        r = await hass.config_entries.options.async_configure(r['flow_id'], {})
+        m = await synced(entry, old, lambda m: m.data.get('status') == 'ok', 'switch back')
+        check(entry.data['photo_dir'] == str(photo_dir) and entry.data['prefix'] == 'lr' and m.data['counts']['added'] == 0
+              and files(photo_dir) == expected, f'switch back downloaded again {m.data.get("counts")}')
+        shutil.rmtree(other)
+
         # --- The token endpoint answering 400: auth_failed and a reauth flow.
         token = dict(entry.data['token'])
         hass.config_entries.async_update_entry(entry, data={**entry.data, 'token': {**token, 'expires_at': time.time() - 60}})

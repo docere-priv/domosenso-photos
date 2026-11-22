@@ -128,13 +128,19 @@
       },
       "lightroom_settings": {
         "title": "Ustawienia Lightroom",
-        "description": "Folder zdjęć i podfolder zostały ustalone przy dodawaniu biblioteki.",
+        "description": "Zmiana folderu zdjęć lub podfolderu wymaga najpierw potwierdzenia.",
         "data": {
+          "photo_dir": "Folder zdjęć",
+          "prefix": "Podfolder",
           "interval_min": "Odstęp synchronizacji",
           "max_edge": "Najdłuższa krawędź",
           "quality": "Jakość JPEG",
           "free_floor_gb": "Zachowaj wolne miejsce na dysku"
         }
+      },
+      "lightroom_folder_confirm": {
+        "title": "Zmień folder zdjęć",
+        "description": "Zdjęcia będą synchronizowane do {new}. Każde zdjęcie zostanie pobrane ponownie, chyba że ten folder zawiera już zdjęcia tej biblioteki. Zdjęcia w {old} zostają na miejscu: integracja ich nie usuwa. Zatwierdź, aby zmienić folder."
       },
       "filter": {
         "title": "Filtr",
@@ -197,7 +203,10 @@
       "share_error": "Pierwsza synchronizacja tego albumu się nie powiodła. Sprawdź link, folder zdjęć i wolne miejsce na dysku, a potem spróbuj ponownie.",
       "invalid_years": "Wpisz liczbę całkowitą od 1 do 50 albo zostaw pole puste.",
       "invalid_range": "Ta data jest wcześniejsza niż data początkowa.",
-      "ratings_empty": "Wybierz co najmniej jedną ocenę."
+      "ratings_empty": "Wybierz co najmniej jedną ocenę.",
+      "invalid_photo_dir": "Podaj bezwzględną ścieżkę istniejącego folderu, na przykład /config/www/ramka.",
+      "invalid_prefix": "Podaj folder wewnątrz folderu zdjęć, bez części .., albo zostaw pole puste.",
+      "sync_running": "Trwa synchronizacja. Spróbuj ponownie, gdy się zakończy."
     },
     "abort": {
       "not_loaded": "DomoSenso Photos nie jest załadowana. Przeładuj integrację i spróbuj ponownie.",

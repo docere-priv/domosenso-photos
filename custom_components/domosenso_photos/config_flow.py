@@ -40,6 +40,11 @@ def _prefix(value: str | None) -> str | None:
     return '/'.join(parts)
 
 
+def _folder(photo_dir: str, prefix: str | None) -> str:
+    """The folder photos land in, as shown to the user."""
+    return f'{photo_dir.rstrip("/")}/{prefix}' if prefix else photo_dir
+
+
 class PhotosConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=DOMAIN):
     DOMAIN = DOMAIN
     VERSION = 1
@@ -230,6 +235,7 @@ class LightroomOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self) -> None:
         self._pending: dict | None = None
+        self._folder_change: tuple[str, str, dict] | None = None
 
     def _manager(self):
         return getattr(self.config_entry, 'runtime_data', None)
@@ -261,17 +267,66 @@ class LightroomOptionsFlow(config_entries.OptionsFlow):
         return await self.async_step_lightroom_settings()
 
     async def async_step_lightroom_settings(self, user_input=None):
-        opts = self._options()
+        opts, data = self._options(), self.config_entry.data
+        errors: dict[str, str] = {}
+        shown = {'photo_dir': data['photo_dir'], 'prefix': data.get('prefix') or '',
+                 'interval_min': opts['interval_min'], 'max_edge': opts['max_edge'], 'quality': opts['quality'],
+                 'free_floor_gb': opts['free_floor'] / 1e9}
         if user_input is not None:
-            return self.async_create_entry(data={
-                **self.config_entry.options, 'interval_min': int(user_input['interval_min']),
-                'max_edge': int(user_input['max_edge']), 'quality': int(user_input['quality']),
-                'free_floor': int(round(float(user_input['free_floor_gb']) * 1e9))})
-        return self.async_show_form(step_id='lightroom_settings', data_schema=vol.Schema({
-            vol.Required('interval_min', default=opts['interval_min']): _number(60, 1440, 1, 'min'),
-            vol.Required('max_edge', default=opts['max_edge']): _number(1024, 8192, 1, 'px'),
-            vol.Required('quality', default=opts['quality']): _number(60, 95),
-            vol.Required('free_floor_gb', default=opts['free_floor'] / 1e9): _number(0.1, 1000, 0.1, 'GB')}))
+            shown = {**shown, **user_input}
+            path = await _photo_dir(self.hass, user_input['photo_dir'])
+            prefix = _prefix(user_input.get('prefix'))
+            if path is None:
+                errors['photo_dir'] = 'invalid_photo_dir'
+            if prefix is None:
+                errors['prefix'] = 'invalid_prefix'
+            if not errors:
+                new_options = {
+                    **self.config_entry.options, 'interval_min': int(user_input['interval_min']),
+                    'max_edge': int(user_input['max_edge']), 'quality': int(user_input['quality']),
+                    'free_floor': int(round(float(user_input['free_floor_gb']) * 1e9))}
+                if path == data['photo_dir'] and prefix == (data.get('prefix') or ''):
+                    return self.async_create_entry(data=new_options)
+                if self._syncing():
+                    errors['base'] = 'sync_running'
+                else:
+                    self._folder_change = (path, prefix, new_options)
+                    return await self.async_step_lightroom_folder_confirm()
+        return self._settings_form(shown, errors)
+
+    def _settings_form(self, shown: dict, errors: dict[str, str]):
+        schema = vol.Schema({
+            vol.Required('photo_dir'): selector.TextSelector(),
+            vol.Optional('prefix'): selector.TextSelector(),
+            vol.Required('interval_min'): _number(60, 1440, 1, 'min'),
+            vol.Required('max_edge'): _number(1024, 8192, 1, 'px'),
+            vol.Required('quality'): _number(60, 95),
+            vol.Required('free_floor_gb'): _number(0.1, 1000, 0.1, 'GB')})
+        return self.async_show_form(step_id='lightroom_settings', errors=errors,
+                                    data_schema=self.add_suggested_values_to_schema(schema, shown))
+
+    async def async_step_lightroom_folder_confirm(self, user_input=None):
+        """Every photo is downloaded again into the new folder; the old one is left as it is."""
+        path, prefix, new_options = self._folder_change
+        if user_input is not None:
+            if self._syncing():  # a sync started while the confirmation was open
+                return self._settings_form({
+                    'photo_dir': path, 'prefix': prefix, 'interval_min': new_options['interval_min'],
+                    'max_edge': new_options['max_edge'], 'quality': new_options['quality'],
+                    'free_floor_gb': new_options['free_floor'] / 1e9}, {'base': 'sync_running'})
+            # Data and options in one update: the update listener reloads the entry once.
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data={**self.config_entry.data, 'photo_dir': path, 'prefix': prefix},
+                options=new_options)
+            return self.async_create_entry(data=new_options)
+        data = self.config_entry.data
+        return self.async_show_form(step_id='lightroom_folder_confirm', data_schema=vol.Schema({}),
+                                    description_placeholders={'old': _folder(data['photo_dir'], data.get('prefix')),
+                                                              'new': _folder(path, prefix)})
+
+    def _syncing(self) -> bool:
+        manager = self._manager()
+        return manager is not None and manager.lock.locked()
 
     def _album_choices(self, chosen: set[str]) -> list[dict]:
         cached = cached_library(self._manager().data.get('catalog'))

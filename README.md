@@ -409,6 +409,13 @@ shows it first.
 | JPEG quality | 85 | 60-95 |
 | Keep free on disk | 1 GB | 0.1-1000 GB |
 
+Settings also holds the **Photo folder** and the **Subfolder** chosen when the library was added.
+Changing either asks for a confirmation first, and is refused while a sync runs. After it the
+entry reloads and syncs into the new folder: every photo is downloaded again, unless that folder
+already holds this library's photos (switching back to an earlier folder downloads only what
+changed). The photos in the old folder are left where they are; the integration does not delete
+them.
+
 The library is synced about 60 seconds after Home Assistant starts, every interval, after a
 filter is saved and on demand. Adobe is asked for at most one request every 0.2 s; a `429` or `5xx`
 answer, or a network error, is retried with back-off (honouring `Retry-After`, at most 300 s). If

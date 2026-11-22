@@ -10,6 +10,8 @@
   preview of what a change would add and remove before it is saved.
 - Lightroom: progress while syncing (sensor attributes `phase`, `done`, `total`; sensor
   *Lightroom sync progress* in %).
+- Lightroom: the photo folder and subfolder can be changed in Settings; the photos are downloaded
+  again into the new folder and the old folder is left as it is.
 - Photos keep their colour profile (ICC); wide-gamut photos, such as iPhone originals, no longer shift in colour.
 
 ## 0.2.0 — 2026-11-22
