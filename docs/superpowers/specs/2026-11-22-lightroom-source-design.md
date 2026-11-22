@@ -149,7 +149,7 @@ All set conditions must hold (AND). Empty means "no condition".
 | `include_unfiled` | photos in no album | true |
 | `captured_from`, `captured_to` | dates, inclusive | empty |
 | `captured_last_years` | 1–50; replaces from/to when set | empty |
-| `edited_only` | true: only photos with a Lightroom edit | false |
+| `edited_only` | true: only photos changed from Lightroom's defaults (`develop.fromDefaults` is false) | false |
 | `equipment_include`, `equipment_exclude` | text; matches, case-insensitive, as a substring of make, model or lens | empty |
 | `orientation` | `any`, `landscape`, `portrait` | `any` — **only if the probe finds dimensions** |
 | `keywords_include`, `keywords_exclude` | text list, case-insensitive, whole keyword | empty — **only if the probe finds keywords** |
@@ -272,8 +272,8 @@ its counts, and where the shared marker code is factored.
 
 ## Open before building
 
-These are checked first, on a real account (the author's, in their Home Assistant, each write
-there with their go-ahead), before the rest is built:
+These were checked first, on a real account. Each item below was checked on 2026-11-22; the
+results are in `docs/lightroom-api.md` (Decision record), which is the authority:
 
 1. Adobe accepts `https://my.home-assistant.io/redirect/oauth` as a redirect for the Web App. If
    not, the paste fallback above.
@@ -283,6 +283,7 @@ there with their go-ahead), before the rest is built:
    is left out of the first release.
 4. `payload.develop.userUpdated` changes with each edit (inference in the probe notes): checked by
    editing one photo and reading it again. If not, `changed` combines it with `payload.userUpdated`
-   and the asset's `updated`. `edited_only` means: `develop.userUpdated` present.
+   and the asset's `updated`. `edited_only` means: `develop.fromDefaults` is false (when absent,
+   `develop.userUpdated` present).
 5. How often a `fullsize` rendition already exists (a `GET`, nothing generated). If rarely, README
    says Lightroom photos are at most 2048 px in practice.

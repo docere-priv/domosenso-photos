@@ -78,12 +78,12 @@ def _text(value) -> str | None:
 
 
 def _dimensions(payload: dict) -> tuple[int | None, int | None]:
-    """Not yet read: the field paths wait for the account record."""
+    """Always none: see DIMENSIONS in docs/lightroom-api.md."""
     return None, None
 
 
 def _keywords(payload: dict) -> tuple[str, ...]:
-    """Not yet read: the field path waits for the account record."""
+    """Always none: see KEYWORDS in docs/lightroom-api.md."""
     return ()
 
 
@@ -104,13 +104,19 @@ def to_photo(asset: dict, album_ids: Sequence[str]) -> Photo:
     develop = pl.get('develop') or {}
     flag = _latest(pl.get('reviews')).get('flag')
     width, height = _dimensions(pl)
+    # docs/lightroom-api.md (CHANGED, EDITED): both stamps; develop.userUpdated is on unedited assets too
+    changed = f"{develop.get('userUpdated') or ''}|{pl.get('userUpdated') or ''}"
+    if changed == '|':
+        changed = asset.get('updated') or ''
+    from_defaults = develop.get('fromDefaults')
+    edited = from_defaults is False or (from_defaults is None and bool(develop.get('userUpdated')))
     return Photo(
         asset_id=asset['id'],
         rating=_rating(_latest(pl.get('ratings')).get('rating')),
         flag=flag if flag in ('pick', 'reject') else None,
         captured=captured,
-        changed=develop.get('userUpdated') or pl.get('userUpdated') or asset.get('updated') or '',
-        edited=bool(develop.get('userUpdated')),  # spec: an edit is develop.userUpdated present
+        changed=changed,
+        edited=edited,
         album_ids=tuple(album_ids),
         meta=meta, width=width, height=height, keywords=_keywords(pl))
 

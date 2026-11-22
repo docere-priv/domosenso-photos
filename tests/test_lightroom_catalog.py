@@ -28,7 +28,7 @@ def test_to_photo_full():
     assert p.meta.focal_mm == 35.0 and p.meta.focal35_mm is None
     assert p.meta.f_number == 1.8 and p.meta.exposure_s == 0.0025 and p.meta.iso == 200
     assert p.edited is True
-    assert p.changed == '2024-05-06T07:15:00Z'
+    assert p.changed == '2024-05-06T07:15:00Z|2024-05-05T10:00:00Z'
     assert p.album_ids == ('alb-rome',)
 
 
@@ -51,7 +51,9 @@ def test_to_photo_bare():
     assert p.meta == lc.CameraMeta(None, None, None, None, None, None, None, None)
     a2 = copy.deepcopy(a)
     a2['payload']['userUpdated'] = '2024-06-03T00:00:00Z'
-    assert lc.to_photo(a2, []).changed == '2024-06-03T00:00:00Z'
+    assert lc.to_photo(a2, []).changed == '|2024-06-03T00:00:00Z'
+    a2['payload']['develop'] = {'userUpdated': '2024-06-04T00:00:00Z'}
+    assert lc.to_photo(a2, []).changed == '2024-06-04T00:00:00Z|2024-06-03T00:00:00Z'
 
 
 def test_to_photo_dimensions_and_keywords():
@@ -81,9 +83,17 @@ def test_photo_dict_round_trip():
     assert lc.photo_from_dict(d) == p
 
 
-def test_edited_means_develop_user_updated_present():
+def test_edited_from_defaults_false_is_edited():
     a = _load('asset_full.json')
-    a['payload']['develop'] = {'crsHDREditMode': False}  # develop settings without an edit date
+    a['payload']['develop'] = {'fromDefaults': False}  # no edit date needed
+    assert lc.to_photo(a, []).edited is True
+    a['payload']['develop'] = {'fromDefaults': True, 'userUpdated': '2024-05-06T07:15:00Z'}
+    assert lc.to_photo(a, []).edited is False  # userUpdated is on unedited assets too
+
+
+def test_edited_without_from_defaults_falls_back_to_user_updated():
+    a = _load('asset_full.json')
+    a['payload']['develop'] = {'crsHDREditMode': False}
     assert lc.to_photo(a, []).edited is False
     a['payload']['develop'] = {'userUpdated': '2024-05-06T07:15:00Z'}
     assert lc.to_photo(a, []).edited is True

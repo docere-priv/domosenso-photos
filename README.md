@@ -289,7 +289,7 @@ Edit it under **Configure → Filter**.
 | Photos in no album | on or off | on |
 | Taken from, until | dates, both inclusive | empty |
 | Taken in the last years | 1 to 50; replaces the two dates when set | empty |
-| Edited photos only | on: only photos with a Lightroom edit | off |
+| Edited photos only | on: only photos changed from Lightroom's defaults | off |
 | Camera or lens contains / does not contain | comma-separated text, matched anywhere in make, model or lens, ignoring case | empty |
 
 Album rules:
