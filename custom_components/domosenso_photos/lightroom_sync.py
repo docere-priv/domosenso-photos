@@ -7,14 +7,15 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import tzinfo
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from .album_files import MARKER, free_bytes, read_marker, remove_photo, write_marker, write_photo
 from .album_layout import PhotoDirMissing, inside, make_dirs, rename_target, resolve_path
-from .album_sync import RunBlocking
 from .lightroom_filter import Placed
 
 MASS_MIN = 20
 _MONTH = re.compile(r'\d{4}-\d{2}')
+RunBlocking = Callable[[Callable[[], Any]], Awaitable[Any]]
 
 
 class DiskFull(Exception):
@@ -69,17 +70,24 @@ def _present(folder: Path, items: dict) -> dict[str, dict]:
             if isinstance(v, dict) and _plain(v.get('name')) and (folder / v['name']).is_file()}
 
 
+def _recorded(marker: dict, path: str) -> str:
+    """The folder path the marker was last saved at; a marker without one is where it is."""
+    value = marker.get('path')
+    return value if isinstance(value, str) else path
+
+
 def read_owned(photo_dir: Path, prefix: str, owner: str,
                wanted: dict[str, str] | None = None) -> dict[str, OwnedFolder]:
     """One owned folder per key. wanted: key -> placed folder, if known.
 
-    A second folder with the same key can only be a copy the user made: it is left out, so it is never
-    counted, moved from, renamed or emptied. The one kept is at the placement (or its -N suffix), else
-    the one whose marker was written last (only the managed folder's marker is rewritten each run), else
-    the first by path.
+    Every marker records the path it was saved at. A folder whose marker records another path is a copy
+    when a folder of ours with the same key is at that path: it is left out entirely, so it is never
+    counted, moved from, renamed or emptied. With nothing of ours at the recorded path it is the original,
+    moved, and is adopted (the next save records its new path). Should two folders still share a key,
+    the one at the placement is kept, else the first by path.
     """
     base = photo_dir / prefix if prefix else photo_dir
-    groups: dict[str, list[tuple[OwnedFolder, int]]] = {}  # key -> (folder, marker last_sync), by path
+    groups: dict[str, list[OwnedFolder]] = {}
     if not base.is_dir():
         return {}
     for child in sorted(base.iterdir(), key=lambda c: c.name):
@@ -89,24 +97,14 @@ def read_owned(photo_dir: Path, prefix: str, owner: str,
         marker = read_marker(child)
         if not _ours(marker, owner):
             continue
+        recorded = _recorded(marker, path)
+        if (recorded != path and inside(photo_dir, recorded)
+                and _ours(read_marker(photo_dir / recorded), owner, marker['key'])):
+            continue  # a copy of the folder at the recorded path
         folder = OwnedFolder(marker['key'], path, _present(child, marker['items']))
-        last = marker.get('last_sync')
-        groups.setdefault(folder.key, []).append((folder, last if type(last) is int else -1))
+        groups.setdefault(folder.key, []).append(folder)
     want = wanted or {}
-    out = {}
-    for key, group in groups.items():
-        w = want.get(key)
-        folders = [f for f, _ in group]
-        latest = max(group, key=lambda g: g[1])[0]  # max keeps the first by path on a tie
-        out[key] = (next((f for f in folders if f.path == w), None)
-                    or next((f for f in folders if w is not None and _in_place(f.path, w)), None) or latest)
-    return out
-
-
-def _in_place(path: str, wanted: str) -> bool:
-    """The folder is where the placement wants it, or at the suffixed name a collision gave it."""
-    rest = path[len(wanted) + 1:] if path.startswith(f'{wanted}-') else ''
-    return path == wanted or (rest.isdigit() and int(rest) >= 2)
+    return {key: next((f for f in group if f.path == want.get(key)), group[0]) for key, group in groups.items()}
 
 
 def plan(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int, confirm: bool) -> LrPlan:
@@ -139,8 +137,10 @@ def plan(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int
         remove.append((where[asset][0], asset))
         stale += [(k, asset) for k in where[asset][1:]]
 
+    # A folder off its placed path is offered for a rename; execute keeps it where it is when the
+    # placed path is taken and its current name is the first free suffix (a stable collision suffix).
     rename = [(key, f.path, folder_for[key]) for key, f in sorted(kept.items())
-              if key in folder_for and not _in_place(f.path, folder_for[key])]
+              if key in folder_for and f.path != folder_for[key]]
 
     unfiled = sum(1 for p, old in move if _MONTH.fullmatch(p.key) and not _MONTH.fullmatch(folders[old].key))
     hold = None
@@ -185,6 +185,11 @@ class _Exec:
     def _fresh(self, key: str, items: dict) -> dict:
         return {'owner': self.owner, 'kind': 'lightroom', 'key': key, 'items': items, 'last_sync': self.now}
 
+    def _write_marker(self, dkey: str) -> None:
+        marker = self.markers[dkey]
+        marker['path'], marker['last_sync'] = self.paths[dkey], self.now
+        write_marker(self.photo_dir / self.paths[dkey], marker)
+
     def rename(self, dkey: str, old: str, wanted: str) -> None:
         if self.paths.get(dkey) != old or not inside(self.photo_dir, wanted) or self.load(dkey) is None:
             return
@@ -194,6 +199,7 @@ class _Exec:
         make_dirs(self.photo_dir, str(PurePosixPath(new).parent))
         (self.photo_dir / old).rename(self.photo_dir / new)
         self.paths[dkey] = new
+        self._write_marker(dkey)  # the marker records where the folder now is
 
     def target(self, p: Placed) -> tuple[str, dict] | None:
         """The folder a placed photo is written to, created when this key has none; None if unsafe."""
@@ -202,19 +208,20 @@ class _Exec:
         if not inside(self.photo_dir, p.folder):
             return None
         path = resolve_path(self.photo_dir, p.folder, self.owner, p.key)
+        if not inside(self.photo_dir, path):
+            return None
         folder = self.photo_dir / path
         found = read_marker(folder)
         make_dirs(self.photo_dir, path)
         items = _present(folder, found['items']) if _ours(found, self.owner, p.key) else {}
         self.paths[p.key], self.markers[p.key] = path, self._fresh(p.key, items)
-        write_marker(folder, self.markers[p.key])  # mark the folder ours before the first file lands
+        self._write_marker(p.key)  # mark the folder ours before the first file lands
         return path, self.markers[p.key]
 
     def save(self, dkey: str) -> None:
         """Write the folder's marker; a folder left with nothing but its marker loses both."""
         folder, marker = self.photo_dir / self.paths[dkey], self.markers[dkey]
-        marker['last_sync'] = self.now
-        write_marker(folder, marker)
+        self._write_marker(dkey)
         if not marker['items'] and [c.name for c in folder.iterdir()] == [MARKER]:
             (folder / MARKER).unlink()
             folder.rmdir()

@@ -1,5 +1,6 @@
 """Lightroom plan and execution on owned folders (no Home Assistant import)."""
 import asyncio
+import errno
 import importlib
 import io
 import json
@@ -178,19 +179,44 @@ def test_read_owned_same_key_copy_is_left_alone(tmp_path):
     assert {f.name: f.read_bytes() for f in (tmp_path / 'Copy').iterdir()} == before
 
 
-def test_read_owned_same_key_rename_keeps_most_recent_marker(tmp_path):
+def _copy(src, dst):
+    dst.mkdir()
+    for f in src.iterdir():
+        (dst / f.name).write_bytes(f.read_bytes())
+    return {f.name: f.read_bytes() for f in dst.iterdir()}
+
+
+def test_read_owned_byte_identical_copy_is_ignored(tmp_path):
     run(tmp_path, [placed(1), placed(2)])
-    (tmp_path / 'Copy').mkdir()
-    for f in (tmp_path / 'Trip').iterdir():
-        (tmp_path / 'Copy' / f.name).write_bytes(f.read_bytes())
-    m = marker(tmp_path / 'Copy')
-    m['last_sync'] = NOW - 100  # the copy's marker stops being rewritten once it is made
-    (tmp_path / 'Copy/.sync.json').write_text(json.dumps(m))
-    before = {f.name: f.read_bytes() for f in (tmp_path / 'Copy').iterdir()}
+    before = _copy(tmp_path / 'Trip', tmp_path / 'Copy')  # cp / Finder / File Station
+    assert {f.path for f in lrs.read_owned(tmp_path, '', OWNER).values()} == {'Trip'}
+    run(tmp_path, [placed(1), placed(2)])  # a run with no changes
     pl, _ = run(tmp_path, [placed(1, folder='Coast')])  # album renamed; 'Copy' sorts before 'Trip'
     assert pl.rename == [('alb1', 'Trip', 'Coast')]
     assert photos(tmp_path / 'Coast') == ['2025-06-02_as001.jpg'] and not (tmp_path / 'Trip').exists()
+    assert marker(tmp_path / 'Coast')['path'] == 'Coast'
     assert {f.name: f.read_bytes() for f in (tmp_path / 'Copy').iterdir()} == before
+
+
+def test_read_owned_moved_original_is_adopted(tmp_path):
+    run(tmp_path, [placed(1)])
+    (tmp_path / 'Trip').rename(tmp_path / 'Moved')  # by the user; nothing of ours is left at 'Trip'
+    folders = lrs.read_owned(tmp_path, '', OWNER)
+    assert {k: f.path for k, f in folders.items()} == {'alb1': 'Moved'}
+    assert marker(tmp_path / 'Moved')['path'] == 'Trip'
+    _, res = run(tmp_path, [placed(1, folder='Moved'), placed(3, folder='Moved')])
+    assert res.added == 1
+    assert photos(tmp_path / 'Moved') == ['2025-06-02_as001.jpg', '2025-06-04_as003.jpg']
+    assert marker(tmp_path / 'Moved')['path'] == 'Moved'
+
+
+def test_execute_enospc_on_write_is_disk_full(tmp_path, monkeypatch):
+    def full(folder, name, data, mtime):
+        raise OSError(errno.ENOSPC, 'No space left on device')
+
+    monkeypatch.setattr(lrs, 'write_photo', full)
+    with pytest.raises(lrs.DiskFull):
+        run(tmp_path, [placed(1)])
 
 
 def test_read_owned_same_key_keeps_the_placed_one(tmp_path):
@@ -207,8 +233,21 @@ def test_plan_album_rename_renames_folder():
     assert pl.add == pl.update == pl.move == pl.remove == []
 
 
-def test_plan_suffixed_folder_is_not_renamed():
-    assert plan([placed(1)], [owned('alb1', 'Trip-2', 1)]).rename == []
+def test_suffixed_folder_stays_while_the_name_is_taken(tmp_path):
+    (tmp_path / 'Trip').mkdir()  # the user's own folder
+    run(tmp_path, [placed(1)])
+    pl, _ = run(tmp_path, [placed(1), placed(2)])
+    assert pl.rename == [('alb1', 'Trip-2', 'Trip')]  # offered; execute keeps the first free suffix
+    assert photos(tmp_path / 'Trip-2') == ['2025-06-02_as001.jpg', '2025-06-03_as002.jpg']
+    assert list((tmp_path / 'Trip').iterdir()) == []
+
+
+def test_digit_suffix_in_a_name_is_not_a_collision_suffix(tmp_path):
+    run(tmp_path, [placed(1, folder='Trip-2024')])
+    run(tmp_path, [placed(1, folder='Trip')])  # album renamed from 'Trip-2024' to 'Trip'
+    assert not (tmp_path / 'Trip-2024').exists()
+    assert photos(tmp_path / 'Trip') == ['2025-06-02_as001.jpg']
+    assert marker(tmp_path / 'Trip')['path'] == 'Trip'
 
 
 # --- read_owned / execute ---------------------------------------------------------------------
@@ -220,7 +259,7 @@ def test_execute_writes_file_and_marker(tmp_path):
     assert photos(folder) == ['2025-06-02_as001.jpg']
     assert (folder / '2025-06-02_as001.jpg').read_bytes() == JPEG
     assert os.stat(folder / '2025-06-02_as001.jpg').st_mtime == datetime(2025, 6, 2, 10, tzinfo=timezone.utc).timestamp()
-    assert marker(folder) == {'owner': OWNER, 'kind': 'lightroom', 'key': 'alb1',
+    assert marker(folder) == {'owner': OWNER, 'kind': 'lightroom', 'key': 'alb1', 'path': 'Lr/Trip',
                               'items': {'as001': {'name': '2025-06-02_as001.jpg', 'changed': 'c1'}},
                               'last_sync': NOW}
     assert (res.added, res.updated, res.moved, res.removed, res.skipped) == (1, 0, 0, 0, [])
@@ -345,7 +384,7 @@ def test_two_albums_same_clean_name_stable_suffix(tmp_path):
     pl, _ = run(tmp_path, list(reversed(both)))
     second = {f.key: f.path for f in lrs.read_owned(tmp_path, '', OWNER).values()}
     assert first == second == {'alb1': 'Trip', 'alb2': 'Trip-2'}
-    assert pl.rename == [] and pl.add == [] and pl.move == []
+    assert pl.add == [] and pl.move == [] and pl.remove == []
 
 
 def test_execute_stale_copy_removed_after_kept(tmp_path):
