@@ -192,6 +192,31 @@ automation:
       - action: domosenso_photos.album_sync
 ```
 
+## For other integrations
+
+A paired DomoSenso Frame device manages albums through a small in-process facade. It is an
+internal contract between integrations, not a Home Assistant service:
+
+```python
+api = hass.data['domosenso_photos_albums'].frame_api   # present while the entry is loaded
+```
+
+`api.version` is `1`. A caller checks it and treats a higher number as unsupported; a breaking
+change raises it.
+
+| Method | Result |
+| --- | --- |
+| `api.albums()` | The items of the sensor's `albums` attribute (no link, no password). |
+| `await api.check(url, password)` | The album name. Bounded to 10 s; nothing is saved. |
+| `await api.add(url, password)` | `{'id': ..., 'name': None}`. The album is saved and its first sync runs in the background. |
+| `await api.remove(album_id)` | `'removed'`, or `'busy'` while its sync runs (the album stays). |
+| `await api.sync(album_id)` | Returns at once; the sync runs in the background. |
+
+Failures raise `AlbumError` with `.code` one of `invalid_link`, `already_added`, `wrong_password`,
+`unreachable` (`check`, `add`), `unknown_album` (`remove`, `sync`) or `photos_unavailable` (all
+four, while the entry unloads; nothing is changed then). The password is never
+part of a URL, an error text or a returned value; a caller must not log it either.
+
 ## Sensor
 
 `sensor.domosenso_photos_albums` shows the number of albums. Its `albums` attribute lists, per
