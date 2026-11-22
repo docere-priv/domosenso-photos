@@ -9,10 +9,14 @@ from .album_layout import sanitize_name
 from .lightroom_catalog import Album, Photo
 
 
+FLAGS = ('any', 'not_rejected', 'picks_only')
+ORIENTATIONS = ('any', 'landscape', 'portrait')
+
+
 @dataclass(frozen=True)
 class Filter:
     ratings: frozenset[int] = frozenset({3, 4, 5})
-    flag: str = 'not_rejected'  # or 'picks_only'
+    flag: str = 'not_rejected'  # 'any', 'not_rejected' or 'picks_only'
     albums_include: frozenset[str] = frozenset()
     albums_exclude: frozenset[str] = frozenset()
     include_unfiled: bool = True
@@ -47,7 +51,7 @@ def filter_from_options(options: dict) -> Filter:
 
     return Filter(
         ratings=frozenset(int(x) for x in o['ratings']) if 'ratings' in o else d.ratings,
-        flag=o.get('flag', d.flag),
+        flag=o['flag'] if o.get('flag') in FLAGS else d.flag,
         albums_include=frozenset(o.get('albums_include') or ()),
         albums_exclude=frozenset(o.get('albums_exclude') or ()),
         include_unfiled=bool(o.get('include_unfiled', d.include_unfiled)),
@@ -55,7 +59,7 @@ def filter_from_options(options: dict) -> Filter:
         captured_last_years=o.get('captured_last_years'),
         edited_only=bool(o.get('edited_only', d.edited_only)),
         equipment_include=texts('equipment_include'), equipment_exclude=texts('equipment_exclude'),
-        orientation=o.get('orientation', d.orientation),
+        orientation=o['orientation'] if o.get('orientation') in ORIENTATIONS else d.orientation,
         keywords_include=texts('keywords_include'), keywords_exclude=texts('keywords_exclude'))
 
 
@@ -114,7 +118,7 @@ def _wanted(p: Photo, f: Filter, start: date | None, end: date | None) -> bool:
         return False
     if f.flag == 'picks_only' and p.flag != 'pick':
         return False
-    if f.flag != 'picks_only' and p.flag == 'reject':
+    if f.flag == 'not_rejected' and p.flag == 'reject':
         return False
     day = p.captured.date()
     if (start and day < start) or (end and day > end):

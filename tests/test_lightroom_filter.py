@@ -1,4 +1,5 @@
 import importlib
+import json
 import sys
 import types
 from datetime import date, datetime
@@ -201,7 +202,6 @@ def test_options_round_trip():
                   equipment_include=('a', 'b'), equipment_exclude=('c',), orientation='portrait',
                   keywords_include=('k',), keywords_exclude=('l', 'm'))
     opts = lf.filter_to_options(f)
-    import json
     assert json.loads(json.dumps(opts)) == opts
     assert lf.filter_from_options(opts) == f
     assert lf.filter_from_options(lf.filter_to_options(lf.Filter())) == lf.Filter()
@@ -210,3 +210,14 @@ def test_options_round_trip():
 def test_from_options_ignores_unknown_and_fills_defaults():
     assert lf.filter_from_options({'bogus': 1}) == lf.Filter()
     assert lf.filter_from_options({'ratings': [5]}).ratings == frozenset({5})
+
+
+def test_flag_any_keeps_rejected():
+    ps = [photo('a', flag='reject'), photo('b', flag='pick'), photo('c')]
+    assert ids(run(ps, flag='any')) == ['a', 'b', 'c']
+
+
+def test_from_options_unknown_flag_and_orientation_use_defaults():
+    f = lf.filter_from_options({'flag': 'bogus', 'orientation': 'diagonal'})
+    assert f.flag == 'not_rejected' and f.orientation == 'any'
+    assert lf.filter_from_options({'flag': 'any'}).flag == 'any'
