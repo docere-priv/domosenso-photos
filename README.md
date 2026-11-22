@@ -318,6 +318,38 @@ The last line is `albums smoke ok` with exit code 0; a failed check prints
 `albums smoke failed: <reason>` and exits 1. Set `ALBUMS_SMOKE_DEBUG=1` (`-e` on `docker run`) to
 keep Home Assistant's log output.
 
+`tests/lightroom_ha_smoke.py` does the same for the Lightroom source, against a fake Adobe IMS and
+Lightroom on `127.0.0.1`. The library is invented: 30 assets in three albums, two of them inside a
+set, plus two unfiled assets. The smoke points `application_credentials.AUTHORIZE_URL` /
+`TOKEN_URL` and `lightroom_api.API_BASE` at the fake and drives the OAuth redirect the way Home
+Assistant's callback view does. It covers:
+
+- the config flow and a second entry for the same account;
+- the first sync (folders, markers, EXIF, no GPS);
+- the filter options with their preview, a held mass removal and its confirmation;
+- an edit re-downloading one photo, and a missing rendition skipped;
+- ambiguous and colliding folders, and what their issues leave out of the diagnostics download;
+- a refused refresh starting reauth, and the sign-in-expiring issue;
+- two accounts at once, with the actions' lifecycle;
+- unload during a sync, removing and re-adding the entry;
+- an albums entry syncing alongside.
+
+The fake Lightroom answers 405 to anything but `GET`; the smoke fails if it ever got such a
+request. Nothing contacts Adobe.
+
+```bash
+HA_SMOKE_CONFIG="$(mktemp -d)"
+docker run --rm \
+  --mount "type=bind,src=$HA_SMOKE_CONFIG,dst=/config" \
+  --mount "type=bind,src=$PWD/custom_components,dst=/config/custom_components,readonly" \
+  --mount "type=bind,src=$PWD/tests/lightroom_ha_smoke.py,dst=/lightroom_ha_smoke.py,readonly" \
+  --entrypoint python ghcr.io/home-assistant/home-assistant:2026.9.2 /lightroom_ha_smoke.py
+rm -rf "$HA_SMOKE_CONFIG"
+```
+
+The last line is `lightroom smoke ok` with exit code 0; a failed check prints
+`lightroom smoke failed: <reason>` and exits 1. `LIGHTROOM_SMOKE_DEBUG=1` keeps the log output.
+
 `-e ALBUMS_SMOKE_OFFLINE=1` on a network without internet access checks that the entry still
 loads when the install fails and that HEIC then uses the thumbnail. Use an internal Docker network
 (`docker network create --internal albums-smoke-offline`, then `--network albums-smoke-offline`);
