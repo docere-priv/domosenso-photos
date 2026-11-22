@@ -21,8 +21,11 @@ an extra.
    the user brings their own Adobe Developer Console client id and secret.
 2. Select photos by a **filter** evaluated on metadata before any image is downloaded (below).
 3. Put each selected photo in one folder per Lightroom album; photos in no album in month folders.
-4. Download Adobe's 2048 px rendition (edits applied, ICC profile kept), unchanged pixels, with EXIF
-   written from the asset's metadata (date, camera, lens, exposure). Never write location.
+4. The Lightroom source only **selects and fetches**: it picks photos by the filter and fetches
+   Adobe's rendition (edits applied). Turning that into the file on disk is the integration's
+   existing image pipeline (`album_image.normalize`), the same as for Synology: longest edge
+   (`max_edge`), JPEG quality, orientation, GPS removed. The source adds the EXIF the rendition
+   lacks, from the asset's metadata (date, camera, lens, exposure). Never location.
 5. Re-download a photo when it is edited in Lightroom; move it when its album changes; remove it
    when it no longer passes the filter or leaves the library.
 6. The same safety as the Synology source: only files the integration wrote are ever touched, and
@@ -34,7 +37,8 @@ an extra.
 
 - Lightroom Classic (desktop catalogs), Adobe Portfolio, other Adobe products.
 - Videos.
-- Larger than 2048 px (Adobe's "fullsize" rendition must be generated on request; later, maybe).
+- Image settings of its own: resolution and quality are the entry's existing **Longest edge** and
+  **JPEG quality** settings, applied by the shared pipeline.
 - Filtering by people (face names): face data is personal and not needed for a first version.
 - A year/month folder layout for Lightroom (the Synology source keeps its own layout).
 - Taking over files written by another tool (see "Coexistence"). A one-off migration of a home's
@@ -168,10 +172,21 @@ All set conditions must hold (AND). Empty means "no condition".
   names collide: the second by id gets `-2` (existing `resolve_path`).
 - File: `<YYYY-MM-DD>_<asset id>.jpg`, written via a dot-named temp file and `os.replace`; mtime =
   capture time.
-- A rendition that Pillow cannot open is skipped and counted (`skipped_count`), retried after a day.
-- EXIF written: DateTime, DateTimeOriginal (capture wall time), Make, Model, LensModel,
-  FocalLength, FocalLengthIn35mmFilm, FNumber, ExposureTime, ISO. Saved with `quality="keep"` and
-  the rendition's ICC profile. Renditions carry no EXIF of their own; nothing else is written.
+- **Which rendition:** the smallest Adobe rendition whose long edge is at least `max_edge`:
+  `2048` when `max_edge` ≤ 2048; otherwise `fullsize`, which Adobe generates on request
+  (`POST .../renditions` with `X-Generate-Renditions: fullsize`, then fetch; to be confirmed, open
+  item 5). If `fullsize` cannot be had, `2048` is used and the photo is simply smaller than
+  `max_edge` (the pipeline never enlarges).
+- **Transformation:** the fetched bytes go through `album_image.normalize(data, max_edge, quality)`
+  like a Synology original. The Lightroom source passes the EXIF tags it built from the asset's
+  metadata (DateTime, DateTimeOriginal as capture wall time, Make, Model, LensModel, FocalLength,
+  FocalLengthIn35mmFilm, FNumber, ExposureTime, ISO) so they are written in the same single
+  encode; `normalize` gains that optional argument. Nothing else is written.
+- **ICC profile:** `normalize` today drops the source's ICC profile, so wide-gamut photos (Lightroom
+  renditions; also iPhone originals in the Synology source) shift in colour. `normalize` keeps
+  it; this fixes the Synology source too and goes in the CHANGELOG.
+- A rendition that cannot be fetched or decoded is skipped and counted (`skipped_count`), retried
+  after a day (see Sign-in for the HTTP cases).
 
 ### Ownership and changes
 
@@ -229,7 +244,8 @@ New modules, HA-free where marked, beside the existing ones:
 | `lightroom_api.py` (HA-free) | async client on the existing transport pattern: paging, prefix, throttle, retries, rendition |
 | `lightroom_catalog.py` (HA-free) | asset JSON → `Photo`; album tree |
 | `lightroom_filter.py` (HA-free) | filter options → predicate; folder assignment |
-| `lightroom_exif.py` (HA-free) | EXIF writer |
+| `lightroom_exif.py` (HA-free) | asset metadata → EXIF tags for `normalize` |
+| `album_image.py` (changed) | `normalize` takes extra EXIF tags and keeps the ICC profile |
 | `lightroom_sync.py` (HA-free) | plan (add/update/move/remove/hold) and its execution on markers |
 | `lightroom.py` | entry manager: OAuth session, timer, store, issues, services |
 | `application_credentials.py`, `diagnostics.py` | HA platforms |
@@ -264,3 +280,6 @@ there with their go-ahead), before the rest is built:
 4. `payload.develop.userUpdated` changes with each edit (inference in the probe notes): checked by
    editing one photo and reading it again. If not, `changed` combines it with `payload.userUpdated`
    and the asset's `updated`. `edited_only` means: `develop.userUpdated` present.
+5. The `fullsize` rendition can be generated and fetched with the partner API scopes, and how
+   long generation takes. If not, every photo uses `2048`, and README says Lightroom photos are at
+   most 2048 px.
