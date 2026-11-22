@@ -14,7 +14,7 @@ from PIL import Image, UnidentifiedImageError
 from homeassistant.core import SupportsResponse, callback
 from homeassistant.exceptions import (ConfigEntryError, ConfigEntryNotReady, OAuth2TokenRequestError,
                                       OAuth2TokenRequestReauthError, ServiceValidationError)
-from homeassistant.helpers import config_entry_oauth2_flow, config_validation as cv, issue_registry as ir
+from homeassistant.helpers import config_entry_oauth2_flow, config_validation as cv, entity_registry as er, issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
@@ -40,6 +40,7 @@ SERVICES = ('lightroom_sync', 'lightroom_preview')
 # Entry ids whose options were just saved: the reloaded manager syncs at once, not after the start delay.
 SYNC_ON_START = 'domosenso_photos_lightroom_sync_on_start'
 SIGNIN_WARN = timedelta(days=3)
+SERVICE_USERS = 'domosenso_photos_lightroom_service_users'  # loaded entries counting on the actions
 DEFAULT_PHOTO_DIR = '/config/www/ramka'
 DEFAULT_OPTIONS = {**filter_to_options(Filter()), 'interval_min': 360, 'max_edge': 2560, 'quality': 85,
                    'free_floor': 1_000_000_000}
@@ -143,15 +144,19 @@ class LightroomManager:
                 **{k: counts.get(k, 0) for k in ('added', 'updated', 'moved', 'removed')},
                 'skipped_count': len(d.get('skipped') or {}),
                 'signin_expires': expires.isoformat() if expires else None,
-                'cache_date': (d.get('catalog') or {}).get('read_at')}
+                'cache_date': (d.get('catalog') or {}).get('read_at'),
+                'path_collisions': list(d.get('collisions') or ()),
+                'ambiguous_folders': [p for a in d.get('ambiguous') or () for p in a['paths']]}
 
     async def preview(self, options: dict | None = None) -> dict:
         """What a sync with these options (default: the entry's) would do, from the cache only."""
         catalog = self.data.get('catalog')
         cached = cached_library(catalog)
-        out = {'entry_id': self.entry.entry_id, 'cache_date': (catalog or {}).get('read_at')}
+        out = {'entry_id': self.entry.entry_id, 'cache_date': (catalog or {}).get('read_at'), 'error': None}
         if cached is None:
             return {**out, 'kept': 0, 'add': 0, 'remove': 0, 'move': 0, 'hold': None, 'top': []}
+        if not await self._run_blocking(self.photo_dir.is_dir):  # unmounted: every photo would look new
+            return {**out, 'error': 'photo_dir_missing'}
         photos, albums = cached
         chosen = filter_from_options({**DEFAULT_OPTIONS, **self.entry.options, **(options or {})})
         placed = place(photos, chosen, albums, self.prefix, dt_util.now().date())
@@ -271,15 +276,24 @@ class LightroomManager:
         self._issues()
         async_dispatcher_send(self.hass, signal(self.entry.entry_id))
 
+    def _entity_id(self) -> str:
+        return (er.async_get(self.hass).async_get_entity_id('sensor', DOMAIN, f'{self.entry.entry_id}_lightroom')
+                or 'sensor.domosenso_photos_lightroom')
+
     def _issues(self) -> None:
+        # Issues go into every diagnostics download: placeholders carry counts, never folder paths
+        # (they come from album names); the paths are in the sensor's attributes.
         d, prefix = self.data, f'lightroom_{self.entry.entry_id}'
+        public = self.public()
         expires = signin_expires(self.oauth.token)
+        entity = self._entity_id()
         wanted = {
             'awaiting_confirmation': ({'reason': d.get('hold') or ''}
                                       if d.get('status') == 'awaiting_confirmation' else None),
-            'path_collision': {'paths': ', '.join(d['collisions'])} if d.get('collisions') else None,
-            'ambiguous_folders': ({'paths': ', '.join(p for a in d['ambiguous'] for p in a['paths'])}
-                                  if d.get('ambiguous') else None),
+            'path_collision': ({'count': str(len(public['path_collisions'])), 'entity': entity}
+                               if public['path_collisions'] else None),
+            'ambiguous_folders': ({'count': str(len(public['ambiguous_folders'])), 'entity': entity}
+                                  if public['ambiguous_folders'] else None),
             'signin_expiring': ({'expires': dt_util.as_local(expires).strftime('%Y-%m-%d %H:%M')}
                                 if expires and expires < dt_util.utcnow() + SIGNIN_WARN else None),
         }
@@ -317,6 +331,7 @@ async def async_setup_entry(hass, entry) -> bool:
         await manager.async_close()
         raise
     _register_services(hass)
+    hass.data[SERVICE_USERS] = hass.data.get(SERVICE_USERS, 0) + 1
     entry.async_on_unload(entry.add_update_listener(_options_changed))
     manager.start()
     return True
@@ -325,10 +340,13 @@ async def async_setup_entry(hass, entry) -> bool:
 async def async_unload_entry(hass, entry) -> bool:
     if manager := getattr(entry, 'runtime_data', None):
         await manager.async_close()
-    if not [e for e in _loaded(hass) if e.entry_id != entry.entry_id]:
+    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        return False
+    hass.data[SERVICE_USERS] = users = max(hass.data.get(SERVICE_USERS, 1) - 1, 0)
+    if users == 0:  # the last Lightroom entry: its actions go; album actions keep their own lifecycle
         for name in SERVICES:
             hass.services.async_remove(DOMAIN, name)
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    return True
 
 
 async def async_remove_entry(hass, entry) -> None:

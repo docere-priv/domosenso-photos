@@ -176,6 +176,14 @@
           "save": "Save",
           "filter": "Back to the filter"
         }
+      },
+      "filter_no_folder": {
+        "title": "Preview",
+        "description": "The photo folder is missing (for example, its storage is not mounted), so nothing can be counted and the sync would not run. Save still applies the filter.",
+        "menu_options": {
+          "save": "Save",
+          "filter": "Back to the filter"
+        }
       }
     },
     "error": {
@@ -188,7 +196,8 @@
       "unknown_album": "This album no longer exists.",
       "share_error": "The first sync of this album failed. Check the link, the photo folder and the free disk space, then try again.",
       "invalid_years": "Enter a whole number from 1 to 50, or leave it empty.",
-      "invalid_range": "This date is before the start date."
+      "invalid_range": "This date is before the start date.",
+      "ratings_empty": "Choose at least one rating."
     },
     "abort": {
       "not_loaded": "DomoSenso Photos is not loaded. Reload the integration and try again.",
@@ -209,12 +218,12 @@
       "description": "The last sync of {title} removed and moved nothing because of a safety hold ({reason}): mass_remove means more than half of the synced photos would be removed, mass_unfile that more than half would move to month folders, empty_library that Adobe listed no photos. New photos were still added. If this is intended, use Configure, Sync now with Confirm held changes, or the action domosenso_photos.lightroom_sync with confirm."
     },
     "lightroom_path_collision": {
-      "title": "{title}: a folder got another name",
-      "description": "The wanted folder name was already taken by another folder, so these folders got a number added: {paths}. Rename or move the other folder if you want the plain name; the next sync then renames these."
+      "title": "{title}: folders got another name",
+      "description": "The wanted folder name was already taken by another folder, so {count} folders got a number added. Their paths are in the path_collisions attribute of {entity}. Rename or move the other folder if you want the plain name; the next sync then renames these."
     },
     "lightroom_ambiguous_folders": {
       "title": "{title}: copied folders are left alone",
-      "description": "More than one folder carries the sync marker of the same album, so none of them is changed: {paths}. Delete the copy, or the .sync.json file inside the copy, to let the sync continue."
+      "description": "More than one folder carries the sync marker of the same album, so none of these {count} folders is changed. Their paths are in the ambiguous_folders attribute of {entity}. Delete the copy, or the .sync.json file inside the copy, to let the sync continue."
     },
     "lightroom_signin_expiring": {
       "title": "{title}: Adobe sign-in ends soon",

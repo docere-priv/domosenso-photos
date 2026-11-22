@@ -8,7 +8,8 @@ from .albums import DATA, SIGNAL
 from .lightroom import KIND as LIGHTROOM, signal as lightroom_signal
 
 LIGHTROOM_ATTRIBUTES = ('photos', 'folders', 'last_sync', 'last_success', 'added', 'updated', 'moved', 'removed',
-                        'skipped_count', 'error', 'signin_expires', 'cache_date')
+                        'skipped_count', 'error', 'signin_expires', 'cache_date', 'path_collisions',
+                        'ambiguous_folders')
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -47,7 +48,7 @@ class LightroomSensor(SensorEntity):
     _attr_name = 'DomoSenso Photos Lightroom'
     _attr_icon = 'mdi:image-filter-hdr'
     _attr_should_poll = False
-    _unrecorded_attributes = frozenset({'folders'})
+    _unrecorded_attributes = frozenset({'folders', 'path_collisions', 'ambiguous_folders'})
 
     def __init__(self, entry):
         self._entry = entry

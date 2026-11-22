@@ -176,6 +176,14 @@
           "save": "Speichern",
           "filter": "Zurück zum Filter"
         }
+      },
+      "filter_no_folder": {
+        "title": "Vorschau",
+        "description": "Der Fotoordner fehlt (zum Beispiel, weil sein Speicher nicht eingebunden ist), daher kann nichts gezählt werden, und die Synchronisierung würde nicht laufen. Speichern übernimmt den Filter trotzdem.",
+        "menu_options": {
+          "save": "Speichern",
+          "filter": "Zurück zum Filter"
+        }
       }
     },
     "error": {
@@ -188,7 +196,8 @@
       "unknown_album": "Dieses Album existiert nicht mehr.",
       "share_error": "Die erste Synchronisierung dieses Albums ist fehlgeschlagen. Prüfen Sie den Link, den Fotoordner und den freien Speicherplatz und versuchen Sie es erneut.",
       "invalid_years": "Geben Sie eine ganze Zahl von 1 bis 50 ein oder lassen Sie das Feld leer.",
-      "invalid_range": "Dieses Datum liegt vor dem Anfangsdatum."
+      "invalid_range": "Dieses Datum liegt vor dem Anfangsdatum.",
+      "ratings_empty": "Wählen Sie mindestens eine Bewertung."
     },
     "abort": {
       "not_loaded": "DomoSenso Photos ist nicht geladen. Laden Sie die Integration neu und versuchen Sie es erneut.",
@@ -209,12 +218,12 @@
       "description": "Die letzte Synchronisierung von {title} hat wegen eines Sicherheitsstopps ({reason}) nichts entfernt und nichts verschoben: mass_remove heißt, mehr als die Hälfte der synchronisierten Fotos würde entfernt, mass_unfile, mehr als die Hälfte käme in Monatsordner, empty_library, dass Adobe keine Fotos aufgelistet hat. Neue Fotos wurden trotzdem hinzugefügt. Ist das gewollt, verwenden Sie Konfigurieren, Jetzt synchronisieren mit Zurückgehaltene Änderungen bestätigen, oder die Aktion domosenso_photos.lightroom_sync mit confirm."
     },
     "lightroom_path_collision": {
-      "title": "{title}: ein Ordner hat einen anderen Namen erhalten",
-      "description": "Der gewünschte Ordnername war bereits von einem anderen Ordner belegt, daher haben diese Ordner eine Nummer erhalten: {paths}. Benennen Sie den anderen Ordner um oder verschieben Sie ihn, wenn Sie den einfachen Namen möchten; die nächste Synchronisierung benennt diese dann um."
+      "title": "{title}: Ordner haben einen anderen Namen erhalten",
+      "description": "Der gewünschte Ordnername war bereits von einem anderen Ordner belegt, daher haben {count} Ordner eine Nummer erhalten. Ihre Pfade stehen im Attribut path_collisions von {entity}. Benennen Sie den anderen Ordner um oder verschieben Sie ihn, wenn Sie den einfachen Namen möchten; die nächste Synchronisierung benennt diese dann um."
     },
     "lightroom_ambiguous_folders": {
       "title": "{title}: kopierte Ordner bleiben unverändert",
-      "description": "Mehr als ein Ordner trägt die Synchronisierungsmarkierung desselben Albums, daher wird keiner davon geändert: {paths}. Löschen Sie die Kopie oder die Datei .sync.json in der Kopie, damit die Synchronisierung weiterläuft."
+      "description": "Mehr als ein Ordner trägt die Synchronisierungsmarkierung desselben Albums, daher wird keiner dieser {count} Ordner geändert. Ihre Pfade stehen im Attribut ambiguous_folders von {entity}. Löschen Sie die Kopie oder die Datei .sync.json in der Kopie, damit die Synchronisierung weiterläuft."
     },
     "lightroom_signin_expiring": {
       "title": "{title}: Adobe-Anmeldung endet bald",

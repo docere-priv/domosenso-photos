@@ -307,6 +307,8 @@ class LightroomOptionsFlow(config_entries.OptionsFlow):
         if user_input is not None:
             years = user_input.get('captured_last_years')
             start, end = user_input.get('captured_from') or None, user_input.get('captured_to') or None
+            if not user_input.get('ratings'):
+                errors['ratings'] = 'ratings_empty'  # no rating passes: nothing would ever be synced
             if years not in (None, '') and _years(years) is None:
                 errors['captured_last_years'] = 'invalid_years'
             if start and end and start > end:  # ISO dates compare as text
@@ -337,13 +339,19 @@ class LightroomOptionsFlow(config_entries.OptionsFlow):
         result = await self._manager().preview(self._pending)
         if result['cache_date'] is None:  # no library read yet: nothing to count, Save still applies
             return self.async_show_menu(step_id='filter_no_library', menu_options=['save', 'filter'])
+        if result['error']:  # photo folder missing: counting would show every photo as new
+            return self.async_show_menu(step_id='filter_no_folder', menu_options=['save', 'filter'])
         top = '\n'.join(f"- {t['folder']}: +{t['add']} / -{t['remove']}" for t in result['top']) or '-'
         return self.async_show_menu(step_id='filter_preview', menu_options=['save', 'filter'], description_placeholders={
             'kept': str(result['kept']), 'add': str(result['add']), 'remove': str(result['remove']),
             'move': str(result['move']), 'hold': result['hold'] or '-', 'top': top,
             'cache_date': _when(result['cache_date'])})
 
+    # A menu's step id must have a handler (HA raises UnknownStep otherwise); nothing submits to these.
     async def async_step_filter_no_library(self, user_input=None):
+        return await self.async_step_filter_preview()
+
+    async def async_step_filter_no_folder(self, user_input=None):
         return await self.async_step_filter_preview()
 
     async def async_step_save(self, user_input=None):
