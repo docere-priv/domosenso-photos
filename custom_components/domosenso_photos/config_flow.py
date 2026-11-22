@@ -1,29 +1,124 @@
-"""Config flow: one photo folder per installation; albums are managed in the options flow."""
+"""Config flow: a Synology albums entry (one per installation) or a Lightroom entry per Adobe account."""
+import logging
 import os
+from collections.abc import Mapping
+from pathlib import PurePosixPath
+from typing import Any
+
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.helpers import selector
-from .albums import DATA as ALBUMS, DEFAULT_PHOTO_DIR, DEFAULTS, DOMAIN, FLOW_ACCEPTED, FLOW_ERRORS, AlbumError, format_host_map, parse_host_map
+from homeassistant.helpers import config_entry_oauth2_flow, selector
 
-class PhotosConfigFlow(config_entries.ConfigFlow,domain=DOMAIN):
-    VERSION=1
+from .albums import DATA as ALBUMS, DEFAULT_PHOTO_DIR, DEFAULTS, DOMAIN, FLOW_ACCEPTED, FLOW_ERRORS, AlbumError, format_host_map, parse_host_map
+from .application_credentials import SCOPES
+from .lightroom import DEFAULT_OPTIONS as LIGHTROOM_OPTIONS, KIND as LIGHTROOM
+from .lightroom_api import account_id
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _kind(entry) -> str:
+    return entry.data.get('kind', 'albums')
+
+
+async def _photo_dir(hass, value: str) -> str | None:
+    """The folder when it is an absolute path to an existing directory, else None."""
+    path = value.strip()
+    return path if os.path.isabs(path) and await hass.async_add_executor_job(os.path.isdir, path) else None
+
+
+def _prefix(value: str | None) -> str | None:
+    """A relative folder inside photo_dir ('' for none); None when it could leave photo_dir."""
+    text = (value or '').strip().strip('/')
+    parts = PurePosixPath(text).parts if text else ()
+    if any(part in ('.', '..') for part in parts) or '\\' in text:
+        return None
+    return '/'.join(parts)
+
+
+class PhotosConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domain=DOMAIN):
+    DOMAIN = DOMAIN
+    VERSION = 1
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._oauth_data: dict | None = None
+
+    @property
+    def logger(self) -> logging.Logger:
+        return _LOGGER
+
+    @property
+    def extra_authorize_data(self) -> dict:
+        return {'scope': SCOPES}
+
+    @classmethod
+    @callback
+    def async_supports_options_flow(cls, config_entry) -> bool:
+        # The Lightroom options flow comes with the filter; until then only albums entries have one.
+        return _kind(config_entry) == 'albums'
 
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):return AlbumsOptionsFlow()
 
-    async def async_step_user(self,user_input=None):
+    async def async_step_user(self, user_input=None):
+        return self.async_show_menu(step_id='user', menu_options=['albums', 'lightroom'])
+
+    async def async_step_albums(self,user_input=None):
         await self.async_set_unique_id('albums')
         self._abort_if_unique_id_configured()
         errors={}
         if user_input is not None:
-            path=user_input['photo_dir'].strip()
-            if os.path.isabs(path) and await self.hass.async_add_executor_job(os.path.isdir,path):
+            if path := await _photo_dir(self.hass, user_input['photo_dir']):
                 return self.async_create_entry(title='DomoSenso Photos',data={'photo_dir':path})
             errors['photo_dir']='invalid_photo_dir'
-        return self.async_show_form(step_id='user',data_schema=vol.Schema({
+        return self.async_show_form(step_id='albums',data_schema=vol.Schema({
             vol.Required('photo_dir',default=DEFAULT_PHOTO_DIR):selector.TextSelector()}),errors=errors)
+
+    async def async_step_lightroom(self, user_input=None):
+        return await self.async_step_pick_implementation()
+
+    async def async_oauth_create_entry(self, data: dict):
+        account = account_id(data['token'])
+        if not account:
+            return self.async_abort(reason='account_unknown')
+        await self.async_set_unique_id(account)
+        if self.source == config_entries.SOURCE_REAUTH:
+            self._abort_if_unique_id_mismatch(reason='wrong_account')
+            return self.async_update_reload_and_abort(self._get_reauth_entry(), data_updates=data)
+        self._abort_if_unique_id_configured()
+        self._oauth_data = data
+        return await self.async_step_lightroom_folder()
+
+    async def async_step_lightroom_folder(self, user_input=None):
+        errors = {}
+        if user_input is not None:
+            path = await _photo_dir(self.hass, user_input['photo_dir'])
+            prefix = _prefix(user_input.get('prefix'))
+            if path is None:
+                errors['photo_dir'] = 'invalid_photo_dir'
+            if prefix is None:
+                errors['prefix'] = 'invalid_prefix'
+            if not errors:
+                return self.async_create_entry(title='Lightroom', data={
+                    'kind': LIGHTROOM, 'auth_implementation': self._oauth_data['auth_implementation'],
+                    'token': self._oauth_data['token'], 'photo_dir': path, 'prefix': prefix},
+                    options=dict(LIGHTROOM_OPTIONS))
+        schema = vol.Schema({
+            vol.Required('photo_dir', default=DEFAULT_PHOTO_DIR): selector.TextSelector(),
+            vol.Optional('prefix', default=''): selector.TextSelector()})
+        return self.async_show_form(step_id='lightroom_folder', errors=errors,
+                                    data_schema=self.add_suggested_values_to_schema(schema, user_input) if user_input else schema)
+
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]):
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(self, user_input=None):
+        if user_input is None:
+            return self.async_show_form(step_id='reauth_confirm')
+        return await self.async_step_pick_implementation()
 
 
 def _number(lo,hi,step=1,unit=None):

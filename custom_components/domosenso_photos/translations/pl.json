@@ -2,20 +2,52 @@
   "config": {
     "step": {
       "user": {
+        "title": "Dodaj DomoSenso Photos",
+        "description": "Wybierz, skąd pochodzą zdjęcia. Każde źródło ma własny wpis.",
+        "menu_options": {
+          "albums": "Albumy Synology Photos",
+          "lightroom": "Biblioteka Adobe Lightroom"
+        }
+      },
+      "albums": {
         "title": "Konfiguracja albumów zdjęć",
         "description": "Udostępnione albumy są kopiowane do tego folderu jako pliki JPEG w rozmiarze ekranu. Jeśli folder leży w /config/www, jego zawartość można odczytać bez logowania, więc dodawaj tylko albumy, które mogą być tam widoczne. Albumy dodasz potem przez Konfiguruj.",
         "data": {
           "photo_dir": "Folder zdjęć"
         }
+      },
+      "pick_implementation": {
+        "title": "Wybierz dane uwierzytelniające Adobe"
+      },
+      "lightroom_folder": {
+        "title": "Folder zdjęć Lightroom",
+        "description": "Zdjęcia z biblioteki Lightroom są kopiowane do tego folderu jako pliki JPEG w rozmiarze ekranu: jeden folder na album i jeden na miesiąc dla zdjęć spoza albumów. Wszystko w /config/www można odczytać bez logowania. Pierwsza synchronizacja zaczyna się minutę po konfiguracji.",
+        "data": {
+          "photo_dir": "Folder zdjęć",
+          "prefix": "Podfolder (opcjonalnie)"
+        },
+        "data_description": {
+          "prefix": "Zostaw puste, aby foldery albumów trafiały wprost do folderu zdjęć, albo podaj podfolder, na przykład lightroom."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Zaloguj się ponownie do Adobe",
+        "description": "Adobe nie akceptuje już logowania do Lightroom. Zaloguj się ponownie tym samym kontem Adobe."
       }
     },
     "error": {
-      "invalid_photo_dir": "Podaj bezwzględną ścieżkę istniejącego folderu, na przykład /config/www/ramka."
+      "invalid_photo_dir": "Podaj bezwzględną ścieżkę istniejącego folderu, na przykład /config/www/ramka.",
+      "invalid_prefix": "Podaj folder wewnątrz folderu zdjęć, bez części .., albo zostaw pole puste."
     },
     "abort": {
-      "already_configured": "DomoSenso Photos jest już skonfigurowany. Albumy dodasz lub usuniesz przez Konfiguruj przy jego wpisie.",
-      "single_instance_allowed": "DomoSenso Photos jest już skonfigurowany. Albumy dodasz lub usuniesz przez Konfiguruj przy jego wpisie."
+      "already_configured": "Już skonfigurowano: wpis albumów Synology albo to konto Adobe. Użyj Konfiguruj przy tym wpisie.",
+      "wrong_account": "Zalogowano się innym kontem Adobe. Zaloguj się kontem, którym skonfigurowano ten wpis.",
+      "account_unknown": "Adobe nie podało, które konto się zalogowało. Spróbuj ponownie.",
+      "reauth_successful": "Zalogowano ponownie. Synchronizacja Lightroom działa dalej."
     }
+  },
+  "application_credentials": {
+    "description": "Utwórz w Adobe Developer Console ({console_url}) projekt z Lightroom Services API jako aplikację OAuth Web App i zarejestruj {redirect_url} jako adres przekierowania. Wpisz tutaj identyfikator i sekret klienta projektu. Dla Home Assistant użyj osobnego projektu."
   },
   "options": {
     "step": {

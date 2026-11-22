@@ -2,20 +2,52 @@
   "config": {
     "step": {
       "user": {
+        "title": "DomoSenso Photos hinzufügen",
+        "description": "Wählen Sie, woher die Fotos kommen. Jede Quelle erhält einen eigenen Eintrag.",
+        "menu_options": {
+          "albums": "Synology-Photos-Alben",
+          "lightroom": "Adobe-Lightroom-Bibliothek"
+        }
+      },
+      "albums": {
         "title": "Fotoalben einrichten",
         "description": "Geteilte Alben werden als bildschirmgrosse JPEG-Dateien in diesen Ordner kopiert. Liegt er unter /config/www, ist sein Inhalt ohne Anmeldung lesbar; fügen Sie also nur Alben hinzu, die dort sichtbar sein dürfen. Alben fügen Sie danach über Konfigurieren hinzu.",
         "data": {
           "photo_dir": "Fotoordner"
         }
+      },
+      "pick_implementation": {
+        "title": "Adobe-Zugangsdaten auswählen"
+      },
+      "lightroom_folder": {
+        "title": "Lightroom-Fotoordner",
+        "description": "Fotos aus Ihrer Lightroom-Bibliothek werden als bildschirmgroße JPEG-Dateien in diesen Ordner kopiert, ein Ordner pro Album und einer pro Monat für Fotos ohne Album. Alles unter /config/www ist ohne Anmeldung lesbar. Die erste Synchronisierung startet eine Minute nach der Einrichtung.",
+        "data": {
+          "photo_dir": "Fotoordner",
+          "prefix": "Unterordner (optional)"
+        },
+        "data_description": {
+          "prefix": "Leer lassen, um die Albumordner direkt in den Fotoordner zu legen, oder einen Unterordner angeben, zum Beispiel lightroom."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Erneut bei Adobe anmelden",
+        "description": "Adobe akzeptiert die Lightroom-Anmeldung nicht mehr. Melden Sie sich mit demselben Adobe-Konto erneut an."
       }
     },
     "error": {
-      "invalid_photo_dir": "Geben Sie den absoluten Pfad eines vorhandenen Ordners ein, zum Beispiel /config/www/ramka."
+      "invalid_photo_dir": "Geben Sie den absoluten Pfad eines vorhandenen Ordners ein, zum Beispiel /config/www/ramka.",
+      "invalid_prefix": "Geben Sie einen Ordner innerhalb des Fotoordners ohne ..-Teile an oder lassen Sie das Feld leer."
     },
     "abort": {
-      "already_configured": "DomoSenso Photos ist bereits eingerichtet. Alben fügen Sie über Konfigurieren beim Eintrag hinzu oder entfernen sie dort.",
-      "single_instance_allowed": "DomoSenso Photos ist bereits eingerichtet. Alben fügen Sie über Konfigurieren beim Eintrag hinzu oder entfernen sie dort."
+      "already_configured": "Bereits eingerichtet: der Eintrag für Synology-Alben oder dieses Adobe-Konto. Verwenden Sie Konfigurieren bei diesem Eintrag.",
+      "wrong_account": "Sie haben sich mit einem anderen Adobe-Konto angemeldet. Melden Sie sich mit dem Konto an, mit dem dieser Eintrag eingerichtet wurde.",
+      "account_unknown": "Adobe hat nicht mitgeteilt, welches Konto angemeldet ist. Versuchen Sie es erneut.",
+      "reauth_successful": "Erneut angemeldet. Die Lightroom-Synchronisierung läuft weiter."
     }
+  },
+  "application_credentials": {
+    "description": "Legen Sie in der Adobe Developer Console ({console_url}) ein Projekt mit der Lightroom Services API als OAuth-Web-App an und tragen Sie {redirect_url} als Weiterleitungs-URI ein. Geben Sie hier die Client-ID und das Client-Secret des Projekts ein. Verwenden Sie für Home Assistant ein eigenes Projekt."
   },
   "options": {
     "step": {

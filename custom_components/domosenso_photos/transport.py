@@ -13,7 +13,9 @@ CHUNK = 1 << 20
 Transport = Callable[..., Awaitable[tuple[int, str, bytes]]]
 
 
-def make_transport(session: aiohttp.ClientSession) -> Transport:
+def make_transport(session: aiohttp.ClientSession, with_headers: bool = False) -> Transport:
+    """(status, content type, body); with_headers adds the response headers as a plain dict
+    (the Lightroom client reads Retry-After from them)."""
     async def transport(method, url, params=None, data=None, headers=None):
         """Redirects are not followed (the client reports them); bodies over MAX_BODY are refused."""
         try:
@@ -26,6 +28,8 @@ def make_transport(session: aiohttp.ClientSession) -> Transport:
                     body += chunk
                     if len(body) > MAX_BODY:
                         raise Unreachable('Response too large', 'too_large')
+                if with_headers:
+                    return resp.status, resp.headers.get('Content-Type', ''), bytes(body), dict(resp.headers)
                 return resp.status, resp.headers.get('Content-Type', ''), bytes(body)
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
             raise OSError(type(err).__name__) from err  # the client maps OSError to Unreachable
