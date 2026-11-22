@@ -110,7 +110,7 @@ class AlbumsManager:
         # Own session without a cookie jar: the client sends sharing_sid itself, and a shared jar
         # would mix sessions of albums on the same host.
         self.session = async_create_clientsession(hass, cookie_jar=aiohttp.DummyCookieJar())
-        self.transport = make_transport(self.session)
+        self._transport = make_transport(self.session)
         self.closing = False
         self._unsubs: list = []
         self._task: asyncio.Task | None = None
@@ -256,7 +256,7 @@ class AlbumsManager:
             return None
         try:
             link = parse_share_url(rec['url'])
-            client = ShareClient(self.transport, api_base(link, self.host_map), link.passphrase,
+            client = ShareClient(self._transport, api_base(link, self.host_map), link.passphrase,
                                  rec.get('password'))
             result = await sync_album(rec, client, self.photo_dir, self.options, dt_util.get_default_time_zone(),
                                       int(time.time()), self._run_blocking, confirm)
