@@ -33,6 +33,13 @@ def parse_share_url(url: str) -> ShareLink:
     return ShareLink(origin, origin + prefix, passphrase)
 
 
+def same_link(url: str, link: ShareLink) -> bool:
+    try:
+        return parse_share_url(url) == link
+    except ValueError:
+        return False
+
+
 def api_base(link: ShareLink, host_map: list[dict[str, str]]) -> str:
     for entry in host_map:
         if entry.get('from') == link.origin:
@@ -40,7 +47,7 @@ def api_base(link: ShareLink, host_map: list[dict[str, str]]) -> str:
     return link.base
 
 
-USER_AGENT = 'domosenso-photos/0.1.2'
+USER_AGENT = 'domosenso-photos/0.2.0'
 PAGE_SIZE = 500
 MAX_BODY = 200_000_000  # larger responses are refused by the transport
 # (status, content type, body), plus the response headers when the transport was made with_headers.

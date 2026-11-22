@@ -10,6 +10,14 @@
   preview of what a change would add and remove before it is saved.
 - Photos keep their colour profile (ICC); wide-gamut photos, such as iPhone originals, no longer shift in colour.
 
+## 0.2.0 — 2026-11-22
+
+- Add `AlbumsManager.frame_api`, a versioned in-process facade (`albums`, `check`, `add`,
+  `remove`, `sync`) for the paired Frame device. Services, options and sync behaviour are
+  unchanged. While the entry unloads, its `check`, `add`, `remove` and `sync` raise
+  `photos_unavailable` and change nothing.
+- The share client's User-Agent is `domosenso-photos/0.2.0`.
+
 ## 0.1.2 — 2026-11-21
 
 - Own brand icon (a photo frame), with dark variants and @2x sizes, in place of the Frame icon.

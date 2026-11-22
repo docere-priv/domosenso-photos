@@ -25,8 +25,10 @@ from homeassistant.requirements import async_process_requirements
 from homeassistant.util import dt as dt_util
 
 from .album_layout import sanitize_name
-from .album_share import ShareClient, api_base, parse_share_url
+from .album_plan import AlbumError
+from .album_share import ShareClient, api_base, parse_share_url, same_link
 from .album_sync import AlbumRecord, SyncOptions, remove_album, sync_album
+from .frame_api import FrameApi
 from .transport import make_transport
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,12 +47,6 @@ UNLOAD_WAIT_S = 30
 STARTUP_DELAY_S = 60
 FLOW_ERRORS = {'auth_failed': 'wrong_password', 'unreachable': 'unreachable'}
 FLOW_ACCEPTED = ('ok', 'awaiting_confirmation')
-
-
-class AlbumError(ValueError):
-    def __init__(self, code: str):
-        super().__init__(code)
-        self.code = code
 
 
 def parse_host_map(text: str) -> list[dict[str, str]]:
@@ -119,6 +115,7 @@ class AlbumsManager:
         self._unsubs: list = []
         self._task: asyncio.Task | None = None
         self._running: set[asyncio.Task] = set()
+        self.frame_api = FrameApi(self)
 
     async def async_load(self) -> None:
         data = await self.store.async_load() or {}
@@ -165,14 +162,13 @@ class AlbumsManager:
     def public_list(self) -> list[dict]:
         return [self.public(rec) for rec in self.albums.values()]
 
-    async def add(self, url: str, password: str | None = None, path: str | None = None) -> AlbumRecord:
-        """Create, save and sync once; the record is kept whatever the first sync returns."""
+    async def _create(self, url: str, password: str | None, path: str | None) -> tuple[str, AlbumRecord]:
         url = str(url).strip()
         try:
             link = parse_share_url(url)
         except ValueError as err:
             raise AlbumError('invalid_link') from err
-        if any(_same_link(rec['url'], link) for rec in self.albums.values()):
+        if any(same_link(rec['url'], link) for rec in self.albums.values()):
             raise AlbumError('already_added')
         rid = secrets.token_hex(8)
         self.albums[rid] = AlbumRecord(
@@ -180,7 +176,20 @@ class AlbumsManager:
             remote_album_id=None, name=None, version=None, last_sync=None, last_full_list=None,
             status='syncing', error=None, mode=None, heic=None, photos=0, skipped=[], skipped_at=None)
         await self._save()
-        return await self._sync_one(rid) or self.albums[rid]
+        return rid, self.albums[rid]
+
+    async def add(self, url: str, password: str | None = None, path: str | None = None) -> AlbumRecord:
+        """Create, save and sync once; the record is kept whatever the first sync returns."""
+        rid, rec = await self._create(url, password, path)
+        return await self._sync_one(rid) or rec
+
+    async def add_background(self, url: str, password: str | None = None, path: str | None = None) -> AlbumRecord:
+        """Create and save; the first sync runs as a tracked task and is not awaited."""
+        rid, rec = await self._create(url, password, path)
+        task = self.hass.async_create_task(self._sync_one(rid), 'domosenso_photos first album sync')
+        self._running.add(task)
+        task.add_done_callback(self._running.discard)
+        return rec
 
     async def remove(self, album_id: str) -> AlbumRecord | None:
         """None when removed; the record shown as syncing when its sync is running."""
@@ -291,13 +300,6 @@ class AlbumsManager:
                                       translation_placeholders=placeholders)
             else:
                 ir.async_delete_issue(self.hass, DOMAIN, issue_id)
-
-
-def _same_link(url: str, link) -> bool:
-    try:
-        return parse_share_url(url) == link
-    except ValueError:
-        return False
 
 
 # No password field: service data is recorded in call_service events. A link with a password is
