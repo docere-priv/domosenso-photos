@@ -23,6 +23,8 @@ PAUSE = 0.2
 BACKOFF = (2, 4, 8)
 JPEG_MAGIC = b'\xff\xd8'
 RENDITION_ERRORS = (401, 403, 404)
+MAX_RETRY_AFTER = 300  # seconds; a longer Retry-After would hold the run for hours
+MAX_PAGES = 10_000
 
 
 class LightroomError(Exception):
@@ -40,7 +42,15 @@ class Unreachable(LightroomError):
 
 
 class RenditionUnavailable(LightroomError):
-    """This one rendition cannot be had; the rest of the library is unaffected."""
+    """This one rendition cannot be had; the rest of the library is unaffected.
+
+    `transient` is true when the answer was a network error or 429/5xx after every retry: one is that
+    photo's bad luck, a run of them is an outage (the caller decides).
+    """
+
+    def __init__(self, message: str, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
 
 
 def _claims(jwt: object) -> dict:
@@ -90,6 +100,8 @@ class LightroomClient:
         """The only send path. Returns (status, content type, body, response headers)."""
         if method != 'GET':
             raise ValueError('read-only')
+        if not url.startswith(self._base + '/'):  # the token and the API key never leave Lightroom
+            raise Unreachable('Request outside Lightroom', 'outside')
         sent = {'X-API-Key': self._client_id, 'Authorization': f'Bearer {await self._token()}', **(headers or {})}
         await self._throttle()
         try:
@@ -107,6 +119,10 @@ class LightroomClient:
                 status, _ctype, body, headers = await self._request('GET', url, params=params)
             except OSError as err:
                 problem, retry_after = f'{type(err).__name__} on {path}', None
+            except Unreachable as err:
+                if rendition and err.code == 'too_large':  # that photo's size, not an outage
+                    raise RenditionUnavailable(f'Rendition too large on {path}') from err
+                raise
             else:
                 if 200 <= status < 300:
                     if rendition and (status == 202 or not body.startswith(JPEG_MAGIC)):
@@ -125,8 +141,11 @@ class LightroomClient:
                 problem = f'HTTP {status} on {path}'
                 retry_after = next((v for k, v in headers.items() if k.lower() == 'retry-after'), None)
             if attempt == len(BACKOFF):
+                if rendition:
+                    raise RenditionUnavailable(problem, transient=True)
                 raise Unreachable(problem)
-            await self._sleep(int(retry_after) if str(retry_after or '').isdigit() else BACKOFF[attempt])
+            await self._sleep(min(int(retry_after), MAX_RETRY_AFTER) if str(retry_after or '').isdigit()
+                              else BACKOFF[attempt])
         raise AssertionError('unreachable')  # pragma: no cover
 
     async def _json(self, url: str, params=None) -> dict:
@@ -140,7 +159,7 @@ class LightroomClient:
         return data
 
     async def _pages(self, url: str, params) -> list[dict]:
-        pages = []
+        pages, seen = [], set()
         while True:
             page = await self._json(url, params)
             pages.append(page)
@@ -150,6 +169,9 @@ class LightroomClient:
             url, params = urljoin(page.get('base') or self._base + '/', href), None
             if not url.startswith(self._base + '/'):  # never carry the token to another host
                 raise Unreachable('Next page points outside Lightroom')
+            if url in seen or len(pages) >= MAX_PAGES:  # a loop in the links: the listing never ends
+                raise Unreachable('Paging does not end')
+            seen.add(url)
 
     async def catalog_id(self) -> str:
         return (await self._json(f'{self._base}/v2/catalog'))['id']
@@ -171,6 +193,6 @@ class LightroomClient:
         if max_edge > 2048:
             try:
                 return await self._get(f'{root}/fullsize', rendition=True)
-            except RenditionUnavailable:
-                pass  # an existing full-size rendition only; fall back to the 2048 one
+            except (RenditionUnavailable, Unreachable):
+                pass  # an existing full-size rendition only; any failure falls back to the 2048 one
         return await self._get(f'{root}/2048', rendition=True)

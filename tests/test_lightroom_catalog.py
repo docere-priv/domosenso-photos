@@ -79,3 +79,29 @@ def test_photo_dict_round_trip():
     d = lc.photo_to_dict(p)
     assert json.loads(json.dumps(d)) == d
     assert lc.photo_from_dict(d) == p
+
+
+def test_edited_means_develop_user_updated_present():
+    a = _load('asset_full.json')
+    a['payload']['develop'] = {'crsHDREditMode': False}  # develop settings without an edit date
+    assert lc.to_photo(a, []).edited is False
+    a['payload']['develop'] = {'userUpdated': '2024-05-06T07:15:00Z'}
+    assert lc.to_photo(a, []).edited is True
+
+
+def test_rating_not_a_number_is_unrated():
+    a = _load('asset_full.json')
+    for value in ('four', None, [], 'nan', {'x': 1}):
+        a['payload']['ratings'] = {'app': {'rating': value, 'date': '2024-01-01T00:00:00Z'}}
+        assert lc.to_photo(a, []).rating == 0
+    a['payload']['ratings'] = {'app': {'rating': '3', 'date': '2024-01-01T00:00:00Z'}}
+    assert lc.to_photo(a, []).rating == 3
+
+
+def test_latest_with_mixed_date_types():
+    a = _load('asset_full.json')
+    a['payload']['ratings'] = {'one': {'rating': 5, 'date': 20240101},
+                               'two': {'rating': 2, 'date': '2024-03-01T00:00:00Z'}}
+    a['payload']['reviews'] = {'one': {'flag': 'pick', 'date': None}, 'two': {'flag': 'reject', 'date': 7}}
+    p = lc.to_photo(a, [])
+    assert p.rating == 5 and p.flag == 'reject'  # compared as text: '20240101' > '2024-03-01...'

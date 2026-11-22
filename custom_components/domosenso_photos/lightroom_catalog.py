@@ -1,6 +1,7 @@
 """Adobe Lightroom asset/album JSON -> plain dataclasses. No Home Assistant imports."""
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -46,7 +47,7 @@ def _latest(entries) -> dict:
     if not isinstance(entries, dict):
         return {}
     items = [e for e in entries.values() if isinstance(e, dict)]
-    return max(items, key=lambda e: e.get('date') or '', default={})
+    return max(items, key=lambda e: str(e.get('date') or ''), default={})  # a non-text date must not break max
 
 
 def _wall_time(value) -> datetime | None:
@@ -64,6 +65,12 @@ def _number(value) -> float | None:
         return float(value)
     except (TypeError, ValueError, IndexError, ZeroDivisionError):
         return None
+
+
+def _rating(value) -> int:
+    """0 when unrated or unreadable."""
+    number = _number(value)
+    return int(number) if number is not None and math.isfinite(number) else 0
 
 
 def _text(value) -> str | None:
@@ -99,11 +106,11 @@ def to_photo(asset: dict, album_ids: Sequence[str]) -> Photo:
     width, height = _dimensions(pl)
     return Photo(
         asset_id=asset['id'],
-        rating=int(_latest(pl.get('ratings')).get('rating') or 0),
+        rating=_rating(_latest(pl.get('ratings')).get('rating')),
         flag=flag if flag in ('pick', 'reject') else None,
         captured=captured,
         changed=develop.get('userUpdated') or pl.get('userUpdated') or asset.get('updated') or '',
-        edited=bool(develop),
+        edited=bool(develop.get('userUpdated')),  # spec: an edit is develop.userUpdated present
         album_ids=tuple(album_ids),
         meta=meta, width=width, height=height, keywords=_keywords(pl))
 

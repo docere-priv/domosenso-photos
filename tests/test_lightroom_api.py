@@ -272,3 +272,85 @@ def test_signin_expires_unreadable_is_none():
     assert api.signin_expires({'refresh_token': 'nope'}) is None
     assert api.signin_expires({}) is None
     assert api.signin_expires({'refresh_token': jwt({'created_at': 'x'})}) is None
+
+
+def test_request_outside_lightroom_is_refused_before_the_token():
+    fake = Fake({})
+    asked = []
+
+    async def token():
+        asked.append(1)
+        return 'ACCESS'
+    client = api.LightroomClient(fake, 'KEY', token, sleep=Clock().sleep, clock=Clock().clock)
+    for url in ('https://evil.example/v2/catalog', 'https://lr.adobe.io.evil.example/v2/catalog', BASE):
+        with pytest.raises(api.Unreachable):
+            run(client._request('GET', url))
+    assert fake.calls == [] and asked == []
+
+
+def test_retry_after_is_capped():
+    client, _, clk = make({('GET', f'{BASE}/v2/catalog'): [
+        (429, 'text/plain', b'', {'Retry-After': '86400'}), ok({'id': 'C'})]})
+    assert run(client.catalog_id()) == 'C'
+    assert max(clk.sleeps) == 300
+
+
+def test_paging_loop_is_unreachable():
+    loop = {'base': f'{BASE}/v2/catalogs/C/', 'resources': [], 'links': {'next': {'href': 'assets?page=2'}}}
+    client, fake, _ = make({('GET', f'{BASE}/v2/catalogs/C/assets'): [ok(loop)],
+                            ('GET', f'{BASE}/v2/catalogs/C/assets?page=2'): [ok(loop)]})
+    with pytest.raises(api.Unreachable):
+        run(client.assets('C'))
+    assert len(fake.calls) == 2
+
+
+def test_paging_stops_at_the_page_cap(monkeypatch):
+    monkeypatch.setattr(importlib.import_module('lightroom_api_pkg.lightroom_api'), 'MAX_PAGES', 3)
+    routes = {}
+    for n in range(1, 6):
+        url = f'{BASE}/v2/catalogs/C/assets' + ('' if n == 1 else f'?page={n}')
+        routes[('GET', url)] = [ok({'base': f'{BASE}/v2/catalogs/C/', 'resources': [],
+                                    'links': {'next': {'href': f'assets?page={n + 1}'}}})]
+    client, fake, _ = make(routes)
+    with pytest.raises(api.Unreachable):
+        run(client.assets('C'))
+    assert len(fake.calls) == 3
+
+
+@pytest.mark.parametrize('res', [(503, 'text/plain', b''), (429, 'text/plain', b''), OSError('boom')])
+def test_rendition_outage_is_transient_unavailable(res):
+    client, fake, _ = make({('GET', rendition_url(2048)): [res]})
+    with pytest.raises(api.RenditionUnavailable) as err:
+        run(client.image('C', 'A', 2048))
+    assert err.value.transient and len(fake.calls) == 4
+
+
+def test_rendition_too_large_is_unavailable():
+    client, _, _ = make({('GET', rendition_url(2048)): [api._TransportRefused('Response too large', 'too_large')]})
+    with pytest.raises(api.RenditionUnavailable) as err:
+        run(client.image('C', 'A', 2048))
+    assert not err.value.transient
+
+
+def test_listing_too_large_stays_unreachable():
+    client, _, _ = make({('GET', f'{BASE}/v2/catalog'): [api._TransportRefused('Response too large', 'too_large')]})
+    with pytest.raises(api.Unreachable) as err:
+        run(client.catalog_id())
+    assert err.value.code == 'too_large'
+
+
+def test_rendition_404_is_not_transient():
+    client, _, _ = make({('GET', rendition_url(2048)): [(404, 'text/plain', b'')]})
+    with pytest.raises(api.RenditionUnavailable) as err:
+        run(client.image('C', 'A', 2048))
+    assert not err.value.transient
+
+
+@pytest.mark.parametrize('res', [(503, 'text/plain', b''), (302, 'text/html', b''), 'too_large'])
+def test_image_any_fullsize_failure_falls_back_to_2048(res):
+    if res == 'too_large':
+        res = api._TransportRefused('Response too large', 'too_large')
+    client, fake, _ = make({('GET', rendition_url('fullsize')): [res],
+                            ('GET', rendition_url(2048)): [(200, 'image/jpeg', JPEG)]})
+    assert run(client.image('C', 'A', 4000)) == JPEG
+    assert fake.calls[-1][1] == rendition_url(2048)
