@@ -30,6 +30,8 @@ extra EXIF), marker ownership in `album_layout`, and the transport moved to its 
 - Scopes `openid,AdobeID,lr_partner_apis,lr_partner_rendition_apis,offline_access`; authorize `https://ims-na1.adobelogin.com/ims/authorize/v2`; token `https://ims-na1.adobelogin.com/ims/token/v3`; API `https://lr.adobe.io`; every API call sends `X-API-Key: <client id>`.
 - Strings in `strings.json`, `translations/en.json`, `de.json`, `pl.json` stay in step (same keys).
 - Run `python -m pytest -q tests` green at the end of every task.
+- **Read-only towards Adobe.** Every request to `lr.adobe.io` is a `GET`; the only `POST` is to `TOKEN_URL`. `LightroomClient` raises `ValueError('read-only')` before sending any other method, and nothing in the integration generates renditions.
+- **Implementers and reviewers never get Adobe access.** Tasks 2–11 run against fakes only; no subagent is given a client id, secret, token or the user's sign-in, and none calls `lr.adobe.io` or `ims-na1.adobelogin.com`. Only Task 1 (coordinator, user signs in) and Task 12 (the user's Home Assistant) touch Adobe, and only with `GET`s plus the token exchange.
 
 ## Review Focus
 
@@ -48,10 +50,10 @@ No product code. The results decide Task 6 (rendition), Task 8 (redirect) and wh
 **Files:**
 - Create: `docs/lightroom-api.md` (what the API returns; invented example values only)
 
-- [ ] **Step 1:** Write a throwaway probe in the session's scratch directory (not in the repo) that signs in with the user's own Adobe client (redirect `https://localhost/...`, the user pastes the address), then read-only: catalog, first 200 assets, albums, one album's assets. The user does the sign-in.
+- [ ] **Step 1:** Write a throwaway probe in the session's scratch directory (not in the repo) that signs in with the user's own Adobe client (redirect `https://localhost/...`, the user pastes the address), then **GET only**: catalog, first 200 assets, albums, one album's assets. The probe's HTTP helper refuses any method but `GET` towards `lr.adobe.io`. The user does the sign-in.
 - [ ] **Step 2:** Record field coverage over the 200 assets (counts, no values) for: `payload.ratings`, `payload.reviews`, `payload.captureDate`, `payload.develop.userUpdated`, `payload.xmp.tiff.Make`, `payload.xmp.aux.Lens`, any width/height fields (look under `payload.importSource` and `payload.develop`), any keyword fields (look for `xmp.dc.subject`, `payload.keywords`).
 - [ ] **Step 3:** Ask the user to edit one photo in Lightroom; read that asset again; record whether `payload.develop.userUpdated` changed.
-- [ ] **Step 4:** For one asset: `POST /v2/catalogs/{c}/assets/{a}/renditions` with header `X-Generate-Renditions: fullsize`, then `GET .../renditions/fullsize` until 200 or 10 tries 2 s apart; record status codes, time, pixel size, whether EXIF/ICC are present.
+- [ ] **Step 4:** For 20 assets: `GET .../renditions/fullsize` once each (nothing generated); record how many answer 200, their pixel size, and whether EXIF/ICC are present.
 - [ ] **Step 5:** Decode the token response: record which claim gives a stable account id (`id_token` `sub`, or the access token's `user_id`) and the refresh token's `created_at`/`expires_in`.
 - [ ] **Step 6:** In the Adobe Developer Console the user adds `https://my.home-assistant.io/redirect/oauth` to the Web App's redirect patterns; record whether the console accepts it.
 - [ ] **Step 7:** After the next run of any other tool using the same client, record that its sign-in still works (two live sign-ins).
@@ -59,7 +61,7 @@ No product code. The results decide Task 6 (rendition), Task 8 (redirect) and wh
 - [ ] **Step 9:** Commit `docs/lightroom-api.md` ("Lightroom API notes from a real-account probe"). Delete the scratch probe.
 
 **Decision record for later tasks** (fill in at Step 8, top of `docs/lightroom-api.md`):
-`REDIRECT = my | paste`, `FULLSIZE = yes | no`, `DIMENSIONS = <path> | none`, `KEYWORDS = <path> | none`, `CHANGED = develop.userUpdated | combined`, `ACCOUNT_CLAIM = <claim>`.
+`REDIRECT = my | paste`, `FULLSIZE = often | rarely`, `DIMENSIONS = <path> | none`, `KEYWORDS = <path> | none`, `CHANGED = develop.userUpdated | combined`, `ACCOUNT_CLAIM = <claim>`.
 
 ---
 
@@ -209,13 +211,14 @@ Rules (pin them in tests): every set condition must hold. `ratings`: `photo.rati
     - `account_id(token: dict) -> str | None` (claim from the Task 1 record)
     - `signin_expires(token: dict) -> datetime | None` (refresh token JWT `created_at + expires_in`, ms → aware UTC; `None` if unreadable)
 
-Behaviour to pin: strip a leading `while (1) {}`; follow `links.next.href` joined to `base`; at least 0.2 s between calls (`clock`/`sleep`); 429/5xx/`OSError` retried after 2, 4, 8 s (`Retry-After` seconds win), then `Unreachable`; 3xx → `Unreachable('redirect')`; 401/403 on a listing → `AuthRefused`; other 4xx on a listing → `Unreachable('client_error')`. `image()`: with `max_edge <= 2048` or `FULLSIZE = no`, GET `renditions/2048`; else POST generate (`X-Generate-Renditions: fullsize`), GET `renditions/fullsize` up to 5 tries 2 s apart, falling back to `2048`. On a rendition, 401/403/404, a 202, or a 2xx body not starting `b'\xff\xd8'` → `RenditionUnavailable`.
+Behaviour to pin: strip a leading `while (1) {}`; follow `links.next.href` joined to `base`; at least 0.2 s between calls (`clock`/`sleep`); 429/5xx/`OSError` retried after 2, 4, 8 s (`Retry-After` seconds win), then `Unreachable`; 3xx → `Unreachable('redirect')`; 401/403 on a listing → `AuthRefused`; other 4xx on a listing → `Unreachable('client_error')`. `image()`: with `max_edge <= 2048`, GET `renditions/2048`; else GET `renditions/fullsize` once and, on 404 (or any `RenditionUnavailable` case), GET `renditions/2048`. Never a POST. On a rendition, 401/403/404, a 202, or a 2xx body not starting `b'\xff\xd8'` → `RenditionUnavailable`.
 
 - [ ] **Step 1: Write the failing tests** with a fake transport (a dict of `(method, url) → list of responses`, recording calls and headers):
   - `test_headers_carry_api_key_and_bearer`, `test_prefix_stripped`, `test_paging_follows_next`, `test_throttle_waits_between_calls`
   - `test_retry_after_then_success`, `test_5xx_three_retries_then_unreachable`, `test_redirect_is_unreachable_redirect`
   - `test_listing_401_is_auth_refused`, `test_rendition_403_is_unavailable_not_auth`, `test_rendition_non_jpeg_is_unavailable`
-  - `test_image_small_edge_uses_2048`, `test_image_large_edge_generates_fullsize`, `test_image_fullsize_never_ready_falls_back_to_2048`
+  - `test_image_small_edge_uses_2048`, `test_image_large_edge_uses_existing_fullsize`, `test_image_fullsize_missing_falls_back_to_2048`
+  - `test_client_refuses_non_get` (`_request('POST', ...)` and `'DELETE'`/`'PUT'`/`'PATCH'` raise `ValueError` and the fake transport records no call), `test_all_calls_in_a_full_read_are_get` (a full library read plus 3 images: every recorded method is `GET`)
   - `test_account_id_from_claim`, `test_signin_expires_from_refresh_jwt`, `test_signin_expires_unreadable_is_none`
   - Existing `tests/test_album_*` stay green after the transport move.
 - [ ] **Step 2:** Run — FAIL. **Step 3:** Implement. **Step 4:** `python -m pytest -q tests` — PASS.
@@ -324,7 +327,7 @@ Execute order: renames, then for each add/update/move (free-space check before e
 - Create: `tests/lightroom_ha_smoke.py`
 - Modify: `README.md` (Development: how to run it)
 
-Runs like `albums_ha_smoke.py` (official image 2026.9.2, `--entrypoint python`), last line `lightroom smoke ok`, else `lightroom smoke failed: <reason>`, exit 1. A fake IMS + Lightroom on `127.0.0.1` (aiohttp web app, invented data: 30 assets in 3 albums, a set, 2 unfiled, varied ratings/flags/dates/cameras). Patch `application_credentials.AUTHORIZE_URL/TOKEN_URL` and `lightroom_api` base to the fake. Drive OAuth by configuring the flow with `{'state': <state from the authorize URL>, 'code': 'c1'}` after the external step (paste variant: submit the pasted address).
+Runs like `albums_ha_smoke.py` (official image 2026.9.2, `--entrypoint python`), last line `lightroom smoke ok`, else `lightroom smoke failed: <reason>`, exit 1. A fake IMS + Lightroom on `127.0.0.1` (aiohttp web app, invented data: 30 assets in 3 albums, a set, 2 unfiled, varied ratings/flags/dates/cameras). Patch `application_credentials.AUTHORIZE_URL/TOKEN_URL` and `lightroom_api` base to the fake. The fake Lightroom answers `405` to anything but `GET` and the smoke ends with `check(fake.non_get == 0, ...)`. Drive OAuth by configuring the flow with `{'state': <state from the authorize URL>, 'code': 'c1'}` after the external step (paste variant: submit the pasted address).
 
 - [ ] **Step 1:** Write the smoke covering, each as a `check(...)`: menu → lightroom → OAuth → folder step → entry created; second entry same account aborts; first sync writes exactly the default-filter photos (3★+, not rejected) in album/month folders with markers and EXIF and no GPS; `edited_only` + exclude-album filter through the options flow, preview counts shown, Save → files follow; filter removing > half → `awaiting_confirmation` + repair issue, `lightroom_sync confirm: true` releases it; an edit in the fake (changed `userUpdated`) re-downloads that one file; a rendition 404 → `skipped_count` 1, status `ok`; token endpoint answering 400 → reauth flow in progress; refresh JWT expiring in 2 days → `signin_expiring` issue; `lightroom_preview` response; diagnostics has coverage and no token; unload cancels; remove entry deletes the store and keeps the folders; re-adding the same account reuses them (no `-2`, no downloads); albums entry alongside still syncs (both kinds loaded together).
 - [ ] **Step 2:** Run it per README — `lightroom smoke ok`. Run `albums_ha_smoke.py` — `albums smoke ok`.

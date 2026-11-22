@@ -53,6 +53,11 @@ an extra.
 - Touching a file or folder the integration did not write.
 - Writing GPS, the camera serial number or face regions into a file under `/config/www`.
 - Secrets anywhere but Home Assistant's config entry storage.
+- **Any write to the Lightroom cloud.** The integration only reads: every request to
+  `lr.adobe.io` is a `GET`; the only `POST` goes to Adobe's token endpoint (sign-in and refresh).
+  No photo, album, rating, flag or rendition is ever created, changed or deleted there. Adobe's
+  Lightroom scope is not read-only (inference: no read-only scope is documented), so this is
+  enforced in the client: it refuses any other method before sending.
 
 ## Constraints
 
@@ -172,11 +177,10 @@ All set conditions must hold (AND). Empty means "no condition".
   names collide: the second by id gets `-2` (existing `resolve_path`).
 - File: `<YYYY-MM-DD>_<asset id>.jpg`, written via a dot-named temp file and `os.replace`; mtime =
   capture time.
-- **Which rendition:** the smallest Adobe rendition whose long edge is at least `max_edge`:
-  `2048` when `max_edge` ≤ 2048; otherwise `fullsize`, which Adobe generates on request
-  (`POST .../renditions` with `X-Generate-Renditions: fullsize`, then fetch; to be confirmed, open
-  item 5). If `fullsize` cannot be had, `2048` is used and the photo is simply smaller than
-  `max_edge` (the pipeline never enlarges).
+- **Which rendition:** `2048` when `max_edge` ≤ 2048. Otherwise `fullsize` **if Adobe already
+  has it** (a `GET`; it exists when Lightroom generated it before), else `2048`, and the photo is
+  simply smaller than `max_edge` (the pipeline never enlarges). The integration never asks Adobe
+  to generate a rendition: that is a `POST` that adds a file to the cloud (read-only rule).
 - **Transformation:** the fetched bytes go through `album_image.normalize(data, max_edge, quality)`
   like a Synology original. The Lightroom source passes the EXIF tags it built from the asset's
   metadata (DateTime, DateTimeOriginal as capture wall time, Make, Model, LensModel, FocalLength,
@@ -280,6 +284,5 @@ there with their go-ahead), before the rest is built:
 4. `payload.develop.userUpdated` changes with each edit (inference in the probe notes): checked by
    editing one photo and reading it again. If not, `changed` combines it with `payload.userUpdated`
    and the asset's `updated`. `edited_only` means: `develop.userUpdated` present.
-5. The `fullsize` rendition can be generated and fetched with the partner API scopes, and how
-   long generation takes. If not, every photo uses `2048`, and README says Lightroom photos are at
-   most 2048 px.
+5. How often a `fullsize` rendition already exists (a `GET`, nothing generated). If rarely, README
+   says Lightroom photos are at most 2048 px in practice.
