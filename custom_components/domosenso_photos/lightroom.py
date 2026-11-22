@@ -9,13 +9,16 @@ from datetime import timedelta
 from pathlib import Path
 
 import aiohttp
+import voluptuous as vol
 from PIL import Image, UnidentifiedImageError
-from homeassistant.core import callback
-from homeassistant.exceptions import (ConfigEntryNotReady, OAuth2TokenRequestError,
-                                      OAuth2TokenRequestReauthError)
-from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.core import SupportsResponse, callback
+from homeassistant.exceptions import (ConfigEntryError, ConfigEntryNotReady, OAuth2TokenRequestError,
+                                      OAuth2TokenRequestReauthError, ServiceValidationError)
+from homeassistant.helpers import config_entry_oauth2_flow, config_validation as cv, issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -23,13 +26,20 @@ from . import album_image, lightroom_api, lightroom_library
 from .album_layout import PhotoDirMissing
 from .lightroom_api import (AuthRefused, LightroomClient, LightroomError, RenditionUnavailable, Unreachable,
                             account_id, signin_expires)
+from .lightroom_catalog import Album, photo_from_dict
 from .lightroom_exif import exif_adder
 from .lightroom_filter import Filter, Placed, filter_from_options, filter_to_options, place
-from .lightroom_sync import DiskFull, execute, plan, read_owned
+from .lightroom_sync import DiskFull, collisions, execute, plan, preview, read_owned
 from .transport import make_transport
 
 _LOGGER = logging.getLogger(__name__)
+DOMAIN = 'domosenso_photos'
 KIND = 'lightroom'
+PLATFORMS = ['sensor']
+SERVICES = ('lightroom_sync', 'lightroom_preview')
+# Entry ids whose options were just saved: the reloaded manager syncs at once, not after the start delay.
+SYNC_ON_START = 'domosenso_photos_lightroom_sync_on_start'
+SIGNIN_WARN = timedelta(days=3)
 DEFAULT_PHOTO_DIR = '/config/www/ramka'
 DEFAULT_OPTIONS = {**filter_to_options(Filter()), 'interval_min': 360, 'max_edge': 2560, 'quality': 85,
                    'free_floor': 1_000_000_000}
@@ -41,6 +51,19 @@ _BAD_RESPONSE = (LightroomError, KeyError, IndexError, AttributeError, TypeError
 
 def store_key(entry_id: str) -> str:
     return f'domosenso_photos.lightroom.{entry_id}'
+
+
+def signal(entry_id: str) -> str:
+    return f'domosenso_photos_lightroom_updated_{entry_id}'
+
+
+def cached_library(catalog: dict | None) -> tuple[list, dict[str, Album]] | None:
+    """Photos and albums from the stored catalog cache; None when no library has been read yet."""
+    if not catalog:
+        return None
+    albums = {a['id']: Album(a['id'], a['name'], a.get('parent_id'), bool(a.get('is_set')))
+              for a in catalog.get('albums') or ()}
+    return [photo_from_dict(p) for p in catalog.get('photos') or ()], albums
 
 
 class _Failed(Exception):
@@ -83,8 +106,12 @@ class LightroomManager:
         self.data = await self.store.async_load() or {}
 
     def start(self) -> None:
+        self._issues()
+        saved = self.hass.data.get(SYNC_ON_START, set())
+        delay = 0 if self.entry.entry_id in saved else STARTUP_DELAY_S
+        saved.discard(self.entry.entry_id)
         self._unsubs = [
-            async_call_later(self.hass, STARTUP_DELAY_S, self._tick),
+            async_call_later(self.hass, delay, self._tick),
             async_track_time_interval(self.hass, self._tick, timedelta(minutes=self.interval),
                                       name='domosenso_photos lightroom', cancel_on_shutdown=True)]
 
@@ -103,6 +130,8 @@ class LightroomManager:
                     await asyncio.sleep(0.2)
         except TimeoutError:
             _LOGGER.warning('Lightroom sync still running after %s s', UNLOAD_WAIT_S)
+        # detach, not close: the connector is Home Assistant's shared one (HA also detaches on unload).
+        self.http.detach()
 
     def public(self) -> dict:
         d, counts = self.data, self.data.get('counts') or {}
@@ -115,6 +144,19 @@ class LightroomManager:
                 'skipped_count': len(d.get('skipped') or {}),
                 'signin_expires': expires.isoformat() if expires else None,
                 'cache_date': (d.get('catalog') or {}).get('read_at')}
+
+    async def preview(self, options: dict | None = None) -> dict:
+        """What a sync with these options (default: the entry's) would do, from the cache only."""
+        catalog = self.data.get('catalog')
+        cached = cached_library(catalog)
+        out = {'entry_id': self.entry.entry_id, 'cache_date': (catalog or {}).get('read_at')}
+        if cached is None:
+            return {**out, 'kept': 0, 'add': 0, 'remove': 0, 'move': 0, 'hold': None, 'top': []}
+        photos, albums = cached
+        chosen = filter_from_options({**DEFAULT_OPTIONS, **self.entry.options, **(options or {})})
+        placed = place(photos, chosen, albums, self.prefix, dt_util.now().date())
+        owned = await self._run_blocking(lambda: read_owned(self.photo_dir, self.prefix, self.owner))
+        return {**out, **preview(placed, owned, catalog.get('asset_count'))}
 
     async def sync(self, confirm: bool = False) -> dict:
         """One sync at a time; a call while one runs returns the state shown as syncing."""
@@ -134,6 +176,7 @@ class LightroomManager:
         if self.lock.locked():
             return {**self.public(), 'status': 'syncing'}
         async with self.lock:
+            async_dispatcher_send(self.hass, signal(self.entry.entry_id))  # shows syncing
             # Only a hold that exists now is confirmed; a hold this run creates stays.
             confirm = confirm and self.data.get('status') == 'awaiting_confirmation'
             now = int(time.time())
@@ -155,7 +198,8 @@ class LightroomManager:
             except OSError as err:
                 update = ({'status': 'disk_full', 'error': None} if err.errno == errno.ENOSPC
                           else {'status': 'error', 'error': 'write_failed'})
-            except _BAD_RESPONSE:
+            except _BAD_RESPONSE as err:
+                _LOGGER.debug('Lightroom answered unexpectedly: %s', type(err).__name__)
                 update = {'status': 'error', 'error': 'unexpected_response'}
             except Exception as err:  # noqa: BLE001 - a bug must not stop the timer
                 _LOGGER.error('Lightroom sync failed unexpectedly: %s', type(err).__name__)
@@ -164,6 +208,8 @@ class LightroomManager:
             if update['status'] in ('ok', 'awaiting_confirmation'):
                 self.data['last_success'] = now
             await self._save()
+        if not self.closing:
+            async_dispatcher_send(self.hass, signal(self.entry.entry_id))  # the lock is free: no longer syncing
         return self.public()
 
     async def _sync_body(self, confirm: bool, now: int) -> dict:
@@ -204,11 +250,12 @@ class LightroomManager:
             run.skipped, library.photos, any(a in tried for a in run.skipped), self.data.get('skipped_at'), now)
         names = {a.id: a.name for a in library.albums.values()}
         after = await self._run_blocking(lambda: read_owned(self.photo_dir, self.prefix, self.owner))
+        collided = collisions(placed, after)
         folders = [{'key': f.key, 'name': names.get(f.key, f.key), 'path': f.path, 'photos': len(f.items)}
                    for f in sorted(after.values(), key=lambda f: f.path)]
         return {'status': 'awaiting_confirmation' if lr_plan.hold else 'ok', 'error': None, 'hold': lr_plan.hold,
                 'counts': {'added': run.added, 'updated': run.updated, 'moved': run.moved, 'removed': run.removed},
-                'skipped': skipped, 'skipped_at': skipped_at,
+                'skipped': skipped, 'skipped_at': skipped_at, 'collisions': collided,
                 'photos': sum(f['photos'] for f in folders), 'folders': folders}
 
     @callback
@@ -221,23 +268,55 @@ class LightroomManager:
         if self.closing:  # a closed manager must not overwrite what its successor saves
             return
         await self.store.async_save(self.data)
+        self._issues()
+        async_dispatcher_send(self.hass, signal(self.entry.entry_id))
+
+    def _issues(self) -> None:
+        d, prefix = self.data, f'lightroom_{self.entry.entry_id}'
+        expires = signin_expires(self.oauth.token)
+        wanted = {
+            'awaiting_confirmation': ({'reason': d.get('hold') or ''}
+                                      if d.get('status') == 'awaiting_confirmation' else None),
+            'path_collision': {'paths': ', '.join(d['collisions'])} if d.get('collisions') else None,
+            'ambiguous_folders': ({'paths': ', '.join(p for a in d['ambiguous'] for p in a['paths'])}
+                                  if d.get('ambiguous') else None),
+            'signin_expiring': ({'expires': dt_util.as_local(expires).strftime('%Y-%m-%d %H:%M')}
+                                if expires and expires < dt_util.utcnow() + SIGNIN_WARN else None),
+        }
+        for key, placeholders in wanted.items():
+            issue_id = f'{prefix}_{key}'
+            if placeholders is None:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            else:
+                ir.async_create_issue(self.hass, DOMAIN, issue_id, is_fixable=False,
+                                      severity=ir.IssueSeverity.WARNING, translation_key=f'lightroom_{key}',
+                                      translation_placeholders={'title': self.entry.title, **placeholders})
 
 
 async def _options_changed(hass, entry) -> None:
     """Reload for an options change only; a refreshed token also updates the entry."""
     manager = getattr(entry, 'runtime_data', None)
     if manager is None or dict(entry.options) != manager.options_seen:
+        hass.data.setdefault(SYNC_ON_START, set()).add(entry.entry_id)  # "after Save": sync at once
         await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_setup_entry(hass, entry) -> bool:
     try:
         implementation = await config_entry_oauth2_flow.async_get_config_entry_implementation(hass, entry)
-    except (ValueError, config_entry_oauth2_flow.ImplementationUnavailableError) as err:
-        raise ConfigEntryNotReady('Lightroom application credentials are not available') from err
+    except ValueError as err:  # the application credential was removed: retrying will not help
+        raise ConfigEntryError('The Lightroom application credential is missing') from err
+    except config_entry_oauth2_flow.ImplementationUnavailableError as err:
+        raise ConfigEntryNotReady('Lightroom application credentials are not available yet') from err
     manager = LightroomManager(hass, entry, config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation))
     await manager.async_load()
     entry.runtime_data = manager
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except BaseException:
+        await manager.async_close()
+        raise
+    _register_services(hass)
     entry.async_on_unload(entry.add_update_listener(_options_changed))
     manager.start()
     return True
@@ -246,9 +325,51 @@ async def async_setup_entry(hass, entry) -> bool:
 async def async_unload_entry(hass, entry) -> bool:
     if manager := getattr(entry, 'runtime_data', None):
         await manager.async_close()
-    return True
+    if not [e for e in _loaded(hass) if e.entry_id != entry.entry_id]:
+        for name in SERVICES:
+            hass.services.async_remove(DOMAIN, name)
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 async def async_remove_entry(hass, entry) -> None:
     """The catalog cache goes with the entry (the token is in the entry data). Photo folders stay."""
     await Store(hass, 1, store_key(entry.entry_id)).async_remove()
+    for key in ('awaiting_confirmation', 'path_collision', 'ambiguous_folders', 'signin_expiring'):
+        ir.async_delete_issue(hass, DOMAIN, f'lightroom_{entry.entry_id}_{key}')
+
+
+def _loaded(hass) -> list:
+    """Loaded Lightroom entries with their manager."""
+    return [e for e in hass.config_entries.async_loaded_entries(DOMAIN)
+            if e.data.get('kind') == KIND and isinstance(getattr(e, 'runtime_data', None), LightroomManager)]
+
+
+def _managers(hass, entry_id: str | None) -> list[LightroomManager]:
+    entries = _loaded(hass)
+    if entry_id:
+        entries = [e for e in entries if e.entry_id == entry_id]
+        if not entries:
+            raise ServiceValidationError(translation_domain=DOMAIN, translation_key='unknown_library')
+    return [e.runtime_data for e in entries]
+
+
+SYNC_SCHEMA = vol.Schema({vol.Optional('entry_id'): cv.string, vol.Optional('confirm', default=False): cv.boolean})
+PREVIEW_SCHEMA = vol.Schema({vol.Optional('entry_id'): cv.string})
+
+
+def _register_services(hass) -> None:
+    if hass.services.has_service(DOMAIN, 'lightroom_sync'):
+        return
+
+    async def lightroom_sync(call):
+        managers = _managers(hass, call.data.get('entry_id') or None)
+        return {'libraries': list(await asyncio.gather(*(m.sync(call.data['confirm']) for m in managers)))}
+
+    async def lightroom_preview(call):
+        managers = _managers(hass, call.data.get('entry_id') or None)
+        return {'libraries': [await m.preview() for m in managers]}
+
+    for name, handler, schema in (('lightroom_sync', lightroom_sync, SYNC_SCHEMA),
+                                  ('lightroom_preview', lightroom_preview, PREVIEW_SCHEMA)):
+        async_register_admin_service(hass, DOMAIN, name, handler, schema=schema,
+                                     supports_response=SupportsResponse.OPTIONAL)

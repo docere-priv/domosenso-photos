@@ -1,14 +1,21 @@
-"""Albums sensor: number of synced albums, public album list as attribute."""
+"""Sensors: the Albums sensor (number of synced albums) and one sensor per Lightroom library."""
 from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .albums import DATA, SIGNAL
+from .lightroom import KIND as LIGHTROOM, signal as lightroom_signal
+
+LIGHTROOM_ATTRIBUTES = ('photos', 'folders', 'last_sync', 'last_success', 'added', 'updated', 'moved', 'removed',
+                        'skipped_count', 'error', 'signin_expires', 'cache_date')
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    async_add_entities([AlbumsSensor(hass.data[DATA])])
+    if entry.data.get('kind', 'albums') == LIGHTROOM:
+        async_add_entities([LightroomSensor(entry)])
+    else:
+        async_add_entities([AlbumsSensor(hass.data[DATA])])
 
 
 class AlbumsSensor(SensorEntity):
@@ -32,3 +39,29 @@ class AlbumsSensor(SensorEntity):
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(async_dispatcher_connect(self.hass, SIGNAL, self.async_write_ha_state))
+
+
+class LightroomSensor(SensorEntity):
+    """State = the library's sync status; Home Assistant numbers a second library's entity id."""
+
+    _attr_name = 'DomoSenso Photos Lightroom'
+    _attr_icon = 'mdi:image-filter-hdr'
+    _attr_should_poll = False
+    _unrecorded_attributes = frozenset({'folders'})
+
+    def __init__(self, entry):
+        self._entry = entry
+        self._attr_unique_id = f'{entry.entry_id}_lightroom'
+
+    @property
+    def native_value(self) -> str | None:
+        return self._entry.runtime_data.public()['status']
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        public = self._entry.runtime_data.public()
+        return {k: public[k] for k in LIGHTROOM_ATTRIBUTES}
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(async_dispatcher_connect(self.hass, lightroom_signal(self._entry.entry_id),
+                                                      self.async_write_ha_state))

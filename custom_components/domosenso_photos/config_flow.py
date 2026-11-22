@@ -9,11 +9,14 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers import config_entry_oauth2_flow, selector
+from homeassistant.util import dt as dt_util
 
 from .albums import DATA as ALBUMS, DEFAULT_PHOTO_DIR, DEFAULTS, DOMAIN, FLOW_ACCEPTED, FLOW_ERRORS, AlbumError, format_host_map, parse_host_map
 from .application_credentials import SCOPES
-from .lightroom import DEFAULT_OPTIONS as LIGHTROOM_OPTIONS, KIND as LIGHTROOM
+from .lightroom import DEFAULT_OPTIONS as LIGHTROOM_OPTIONS, KIND as LIGHTROOM, cached_library
 from .lightroom_api import account_id
+from .lightroom_catalog import album_label
+from .lightroom_filter import FLAGS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,15 +56,10 @@ class PhotosConfigFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler, domai
     def extra_authorize_data(self) -> dict:
         return {'scope': SCOPES}
 
-    @classmethod
-    @callback
-    def async_supports_options_flow(cls, config_entry) -> bool:
-        # The Lightroom options flow comes with the filter; until then only albums entries have one.
-        return _kind(config_entry) == 'albums'
-
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry):return AlbumsOptionsFlow()
+    def async_get_options_flow(config_entry):
+        return LightroomOptionsFlow() if _kind(config_entry) == LIGHTROOM else AlbumsOptionsFlow()
 
     async def async_step_user(self, user_input=None):
         return self.async_show_menu(step_id='user', menu_options=['albums', 'lightroom'])
@@ -198,3 +196,156 @@ class AlbumsOptionsFlow(config_entries.OptionsFlow):
         # hassfest refuses URLs inside translation strings; the example origin comes in as a placeholder.
         return self.async_show_form(step_id='settings',data_schema=self.add_suggested_values_to_schema(schema,user_input) if user_input else schema,errors=errors,
                                     description_placeholders={'example_origin':'https://photos.example.com'})
+
+
+RATINGS = [str(n) for n in range(6)]
+FILTER_KEYS = ('ratings', 'flag', 'albums_include', 'albums_exclude', 'include_unfiled', 'captured_from',
+               'captured_to', 'captured_last_years', 'edited_only', 'equipment_include', 'equipment_exclude')
+
+
+def _terms(text: str | None) -> list[str]:
+    return [t.strip() for t in (text or '').split(',') if t.strip()]
+
+
+def _years(value) -> int | None:
+    """captured_last_years as a whole number 1-50; None when it is not one."""
+    try:
+        years = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(years) if years.is_integer() and 1 <= years <= 50 else None
+
+
+def _when(epoch: int | None) -> str:
+    return dt_util.as_local(dt_util.utc_from_timestamp(epoch)).strftime('%Y-%m-%d %H:%M') if epoch else '-'
+
+
+class LightroomOptionsFlow(config_entries.OptionsFlow):
+    """Sync now, the filter with its preview, and settings; the loaded manager answers from its cache.
+
+    Step ids carry `lightroom_` where the albums flow already uses the name, since both share the
+    options translations. Orientation and keyword fields are not offered: no library has shown them
+    yet (the filter still honours them when set in the options).
+    """
+
+    def __init__(self) -> None:
+        self._pending: dict | None = None
+
+    def _manager(self):
+        return getattr(self.config_entry, 'runtime_data', None)
+
+    def _options(self) -> dict:
+        return {**LIGHTROOM_OPTIONS, **self.config_entry.options}
+
+    async def async_step_init(self, user_input=None):
+        return await self.async_step_lightroom()
+
+    async def async_step_lightroom(self, user_input=None):
+        if self._manager() is None:
+            return self.async_abort(reason='not_loaded')
+        return self.async_show_menu(step_id='lightroom', menu_options=['sync_now', 'filter', 'settings'])
+
+    async def async_step_sync_now(self, user_input=None):
+        return await self.async_step_lightroom_sync_now()
+
+    async def async_step_lightroom_sync_now(self, user_input=None):
+        if user_input is not None:
+            # Runs in the background; the Lightroom sensor shows progress and the result.
+            self.config_entry.async_create_background_task(
+                self.hass, self._manager().sync(user_input.get('confirm', False)), 'domosenso_photos lightroom sync now')
+            return self.async_create_entry(data=dict(self.config_entry.options))
+        return self.async_show_form(step_id='lightroom_sync_now', data_schema=vol.Schema({
+            vol.Optional('confirm', default=False): selector.BooleanSelector()}))
+
+    async def async_step_settings(self, user_input=None):
+        return await self.async_step_lightroom_settings()
+
+    async def async_step_lightroom_settings(self, user_input=None):
+        opts = self._options()
+        if user_input is not None:
+            return self.async_create_entry(data={
+                **self.config_entry.options, 'interval_min': int(user_input['interval_min']),
+                'max_edge': int(user_input['max_edge']), 'quality': int(user_input['quality']),
+                'free_floor': int(round(float(user_input['free_floor_gb']) * 1e9))})
+        return self.async_show_form(step_id='lightroom_settings', data_schema=vol.Schema({
+            vol.Required('interval_min', default=opts['interval_min']): _number(60, 1440, 1, 'min'),
+            vol.Required('max_edge', default=opts['max_edge']): _number(1024, 8192, 1, 'px'),
+            vol.Required('quality', default=opts['quality']): _number(60, 95),
+            vol.Required('free_floor_gb', default=opts['free_floor'] / 1e9): _number(0.1, 1000, 0.1, 'GB')}))
+
+    def _album_choices(self, chosen: set[str]) -> list[dict]:
+        cached = cached_library(self._manager().data.get('catalog'))
+        albums = cached[1] if cached else {}
+        choices = sorted(({'value': i, 'label': album_label(i, albums)} for i in albums),
+                         key=lambda c: c['label'].casefold())
+        # An id gone from the library stays selectable (and ignored by the filter) until removed here.
+        return choices + [{'value': i, 'label': f'missing album ({i})'} for i in sorted(chosen - set(albums))]
+
+    def _filter_schema(self, shown: dict) -> vol.Schema:
+        chosen = set(shown.get('albums_include') or ()) | set(shown.get('albums_exclude') or ())
+        albums = selector.SelectSelector(selector.SelectSelectorConfig(
+            options=self._album_choices(chosen), multiple=True, mode=selector.SelectSelectorMode.DROPDOWN))
+        schema = vol.Schema({
+            vol.Optional('ratings'): selector.SelectSelector(selector.SelectSelectorConfig(
+                options=RATINGS, multiple=True, mode=selector.SelectSelectorMode.LIST, translation_key='rating')),
+            vol.Required('flag'): selector.SelectSelector(selector.SelectSelectorConfig(
+                options=list(FLAGS), mode=selector.SelectSelectorMode.DROPDOWN, translation_key='flag')),
+            vol.Optional('albums_include'): albums,
+            vol.Optional('albums_exclude'): albums,
+            vol.Required('include_unfiled'): selector.BooleanSelector(),
+            vol.Optional('captured_from'): selector.DateSelector(),
+            vol.Optional('captured_to'): selector.DateSelector(),
+            vol.Optional('captured_last_years'): selector.NumberSelector(selector.NumberSelectorConfig(
+                step=1, mode=selector.NumberSelectorMode.BOX)),
+            vol.Required('edited_only'): selector.BooleanSelector(),
+            vol.Optional('equipment_include'): selector.TextSelector(),
+            vol.Optional('equipment_exclude'): selector.TextSelector()})
+        return self.add_suggested_values_to_schema(schema, shown)
+
+    async def async_step_filter(self, user_input=None):
+        errors = {}
+        if user_input is not None:
+            years = user_input.get('captured_last_years')
+            start, end = user_input.get('captured_from') or None, user_input.get('captured_to') or None
+            if years not in (None, '') and _years(years) is None:
+                errors['captured_last_years'] = 'invalid_years'
+            if start and end and start > end:  # ISO dates compare as text
+                errors['captured_to'] = 'invalid_range'
+            if not errors:
+                self._pending = {**self.config_entry.options,
+                                 'ratings': sorted(int(r) for r in user_input.get('ratings') or ()),
+                                 'flag': user_input['flag'],
+                                 'albums_include': sorted(user_input.get('albums_include') or ()),
+                                 'albums_exclude': sorted(user_input.get('albums_exclude') or ()),
+                                 'include_unfiled': bool(user_input['include_unfiled']),
+                                 'captured_from': start, 'captured_to': end,
+                                 'captured_last_years': None if years in (None, '') else _years(years),
+                                 'edited_only': bool(user_input['edited_only']),
+                                 'equipment_include': _terms(user_input.get('equipment_include')),
+                                 'equipment_exclude': _terms(user_input.get('equipment_exclude'))}
+                return await self.async_step_filter_preview()
+            shown = user_input
+        else:
+            opts = self._pending or self._options()
+            shown = {k: opts.get(k) for k in FILTER_KEYS if opts.get(k) not in (None, '')}
+            shown['ratings'] = [str(r) for r in opts.get('ratings') or ()]
+            shown['equipment_include'] = ', '.join(opts.get('equipment_include') or ())
+            shown['equipment_exclude'] = ', '.join(opts.get('equipment_exclude') or ())
+        return self.async_show_form(step_id='filter', data_schema=self._filter_schema(shown), errors=errors)
+
+    async def async_step_filter_preview(self, user_input=None):
+        result = await self._manager().preview(self._pending)
+        if result['cache_date'] is None:  # no library read yet: nothing to count, Save still applies
+            return self.async_show_menu(step_id='filter_no_library', menu_options=['save', 'filter'])
+        top = '\n'.join(f"- {t['folder']}: +{t['add']} / -{t['remove']}" for t in result['top']) or '-'
+        return self.async_show_menu(step_id='filter_preview', menu_options=['save', 'filter'], description_placeholders={
+            'kept': str(result['kept']), 'add': str(result['add']), 'remove': str(result['remove']),
+            'move': str(result['move']), 'hold': result['hold'] or '-', 'top': top,
+            'cache_date': _when(result['cache_date'])})
+
+    async def async_step_filter_no_library(self, user_input=None):
+        return await self.async_step_filter_preview()
+
+    async def async_step_save(self, user_input=None):
+        # The update listener reloads the entry, and the new manager syncs at once.
+        return self.async_create_entry(data=self._pending or dict(self.config_entry.options))

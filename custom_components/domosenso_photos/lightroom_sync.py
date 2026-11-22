@@ -169,6 +169,48 @@ def plan(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int
     return LrPlan(add, update, move, remove + stale, rename, hold, folders, ambiguous)
 
 
+PREVIEW_TOP = 5
+
+
+def preview(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int | None = None) -> dict:
+    """What a sync with these placements would do, before any hold, and the hold it would raise.
+
+    The counts are the changes once confirmed, so a held filter change still shows its size. A move
+    counts as an add to its new folder and a removal from its old one in `top`. listed_assets is the
+    library's asset count when known (an empty library holds); None leaves that check out.
+    """
+    held = plan(placed, owned, 1 if listed_assets is None else listed_assets, False).hold
+    full = plan(placed, owned, 1 if listed_assets is None else listed_assets, True)
+    paths = {key: f.path for key, f in full.owned.items()}
+    wanted = {p.photo.asset_id for p in placed}
+    removed = {(key, asset) for key, asset in full.remove if asset not in wanted}
+    moved = {p.photo.asset_id for p, _ in full.move}
+    changed: dict[str, list[int]] = {}
+
+    def bump(folder: str, i: int) -> None:
+        changed.setdefault(folder, [0, 0])[i] += 1
+
+    for p in full.add:
+        bump(paths.get(p.key, p.folder), 0)
+    for p, old in full.move:
+        bump(paths.get(p.key, p.folder), 0)
+        bump(paths[old], 1)
+    for key, _ in removed:
+        bump(paths[key], 1)
+    in_place = {asset for f in full.owned.values() for asset in f.items} & wanted
+    top = sorted(changed.items(), key=lambda kv: (-sum(kv[1]), kv[0]))[:PREVIEW_TOP]
+    return {'kept': len(in_place - moved), 'add': len(full.add), 'remove': len({a for _, a in removed}),
+            'move': len(full.move), 'hold': held,
+            'top': [{'folder': folder, 'add': a, 'remove': r} for folder, (a, r) in top]}
+
+
+def collisions(placed: list[Placed], owned: dict[str, OwnedFolder]) -> list[str]:
+    """Owned folders at `<wanted>-<n>` because another folder held the wanted name."""
+    wanted = {p.key: p.folder for p in placed}
+    return sorted(f.path for f in owned.values()
+                  if f.key in wanted and re.fullmatch(re.escape(wanted[f.key]) + r'-\d+', f.path))
+
+
 @dataclass
 class _Exec:
     plan: LrPlan

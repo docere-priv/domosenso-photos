@@ -447,3 +447,37 @@ def test_execute_stale_copy_removed_after_kept(tmp_path):
     assert pl.remove == [('alb2', 'as001')]
     assert photos(beach) == ['2025-06-03_as002.jpg']
     assert photos(tmp_path / 'Trip') == ['2025-06-02_as001.jpg']
+
+
+def test_preview_counts_and_top_folders():
+    wanted = [placed(1, 'alA', 'A'), placed(2, 'alA', 'A'), placed(3, 'alA', 'A'),  # adds
+              placed(7, 'alB', 'B'),  # kept where it is
+              placed(10, 'alA', 'A')]  # moves from C into A
+    folders = {'alB': owned('alB', 'B', 5, 6, 7), 'alC': owned('alC', 'C', 10)}
+    out = lrs.preview(wanted, folders)
+    assert {k: out[k] for k in ('kept', 'add', 'remove', 'move', 'hold')} == \
+        {'kept': 1, 'add': 3, 'remove': 2, 'move': 1, 'hold': None}
+    assert out['top'][0] == {'folder': 'A', 'add': 4, 'remove': 0}
+    assert {t['folder']: (t['add'], t['remove']) for t in out['top']} == {'A': (4, 0), 'B': (0, 2), 'C': (0, 1)}
+
+
+def test_preview_top_keeps_five_most_changed():
+    wanted = [placed(n, f'al{n}', f'F{n}') for n in range(1, 8)]
+    wanted += [placed(20 + n, 'al1', 'F1') for n in range(3)]
+    out = lrs.preview(wanted, {})
+    assert len(out['top']) == 5 and out['top'][0] == {'folder': 'F1', 'add': 4, 'remove': 0}
+
+
+def test_preview_reports_hold():
+    folders = {'alB': owned('alB', 'B', *range(30, 30 + lrs.MASS_MIN))}
+    out = lrs.preview([], folders)
+    # The counts are what Save then a confirmation would do; the hold says the sync would wait first.
+    assert out['hold'] == 'mass_remove' and out['remove'] == lrs.MASS_MIN and out['kept'] == 0
+    assert lrs.preview([], folders, listed_assets=0)['hold'] == 'empty_library'
+
+
+def test_collisions_lists_suffixed_folders_only():
+    wanted = [placed(1, 'alA', 'lr/Trip'), placed(2, 'alB', 'lr/Lake'), placed(3, 'alC', 'lr/Sea-2')]
+    folders = {'alA': owned('alA', 'lr/Trip-2', 1), 'alB': owned('alB', 'lr/Lake', 2),
+               'alC': owned('alC', 'lr/Sea-2', 3), 'alD': owned('alD', 'lr/Old-3')}
+    assert lrs.collisions(wanted, folders) == ['lr/Trip-2']
