@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -20,6 +21,11 @@ RunBlocking = Callable[[Callable[[], Any]], Awaitable[Any]]
 
 class DiskFull(Exception):
     pass
+
+
+def owner_for(account: str) -> str:
+    """The marker owner of an Adobe account: a short hash, since markers are served without login."""
+    return 'lightroom:' + hashlib.sha256(account.encode()).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -114,8 +120,11 @@ def read_owned(photo_dir: Path, prefix: str, owner: str) -> Owned:
     return Owned(out, ambiguous)
 
 
-def plan(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int, confirm: bool) -> LrPlan:
-    ambiguous = list(getattr(owned, 'ambiguous', []))
+def plan(placed: list[Placed], owned: Owned, listed_assets: int, confirm: str | None) -> LrPlan:
+    """confirm is the hold the user confirmed: it releases that hold only, never another one."""
+    if not isinstance(owned, Owned):
+        raise TypeError('plan needs read_owned\'s result')
+    ambiguous = list(owned.ambiguous)
     left_alone = {key for key, _ in ambiguous}
     wanted: dict[str, Placed] = {}
     for p in placed:
@@ -162,25 +171,26 @@ def plan(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int
         hold = 'mass_remove'
     elif total >= MASS_MIN and unfiled > total / 2:
         hold = 'mass_unfile'
-    if hold and confirm:
+    if hold and hold == confirm:
         hold = None
-    if hold:
-        move, remove, stale = [], [], []
+    if hold:  # nothing that changes what is already there, renames included
+        move, remove, stale, rename = [], [], [], []
     return LrPlan(add, update, move, remove + stale, rename, hold, folders, ambiguous)
 
 
 PREVIEW_TOP = 5
 
 
-def preview(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int | None = None) -> dict:
+def preview(placed: list[Placed], owned: Owned, listed_assets: int | None = None) -> dict:
     """What a sync with these placements would do, before any hold, and the hold it would raise.
 
     The counts are the changes once confirmed, so a held filter change still shows its size. A move
     counts as an add to its new folder and a removal from its old one in `top`. listed_assets is the
     library's asset count when known (an empty library holds); None leaves that check out.
     """
-    held = plan(placed, owned, 1 if listed_assets is None else listed_assets, False).hold
-    full = plan(placed, owned, 1 if listed_assets is None else listed_assets, True)
+    listed = 1 if listed_assets is None else listed_assets
+    held = plan(placed, owned, listed, None).hold
+    full = plan(placed, owned, listed, held)
     paths = {key: f.path for key, f in full.owned.items()}
     wanted = {p.photo.asset_id for p in placed}
     removed = {(key, asset) for key, asset in full.remove if asset not in wanted}
@@ -247,6 +257,8 @@ class _Exec:
     def rename(self, dkey: str, old: str, wanted: str) -> None:
         if self.paths.get(dkey) != old or not inside(self.photo_dir, wanted) or self.load(dkey) is None:
             return
+        if any(c.is_dir() for c in (self.photo_dir / old).iterdir()):
+            return  # a subfolder is not ours (another source's folder, say): never carried along
         new = rename_target(self.photo_dir, old, wanted)
         if new == old:
             return

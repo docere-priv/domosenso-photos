@@ -22,7 +22,7 @@ lrf = importlib.import_module('lightroom_sync_pkg.lightroom_filter')
 layout = importlib.import_module('lightroom_sync_pkg.album_layout')
 files = importlib.import_module('lightroom_sync_pkg.album_files')
 
-OWNER = 'lightroom:acct-0001'
+OWNER = lrs.owner_for('acct-0001')
 NOW = 50_000
 _META = catalog.CameraMeta(None, None, None, None, None, None, None, None)
 
@@ -50,8 +50,8 @@ def owned(key, path, *ns, changed='c1'):
     return lrs.OwnedFolder(key, path, items)
 
 
-def plan(placed_list, folders, listed=None, confirm=False):
-    by_key = {f.key: f for f in folders}
+def plan(placed_list, folders, listed=None, confirm=None):
+    by_key = lrs.Owned({f.key: f for f in folders})
     return lrs.plan(placed_list, by_key, len(placed_list) if listed is None else listed, confirm)
 
 
@@ -67,7 +67,7 @@ def execute(pl, photo_dir, fetch=_fetch, free_floor=0):
     return asyncio.run(lrs.execute(pl, photo_dir, OWNER, fetch, _direct, free_floor, timezone.utc, NOW))
 
 
-def run(photo_dir, placed_list, prefix='', listed=None, confirm=False, **kw):
+def run(photo_dir, placed_list, prefix='', listed=None, confirm=None, **kw):
     folders = lrs.read_owned(photo_dir, prefix, OWNER)
     pl = lrs.plan(placed_list, folders, len(placed_list) if listed is None else listed, confirm)
     return pl, execute(pl, photo_dir, **kw)
@@ -122,7 +122,7 @@ def test_plan_exactly_half_removed_does_not_hold():
 
 
 def test_plan_confirm_releases_hold():
-    pl = plan([placed(0)], _many(20), confirm=True)
+    pl = plan([placed(0)], _many(20), confirm='mass_remove')
     assert pl.hold is None and len(pl.remove) == 19
 
 
@@ -130,7 +130,7 @@ def test_plan_mass_unfile_holds():
     unfiled = [placed(n, key='2025-06', folder='2025-06') for n in range(20)]
     pl = plan(unfiled, _many(20))
     assert pl.hold == 'mass_unfile' and pl.move == [] and pl.remove == [] and pl.add == []
-    released = plan(unfiled, _many(20), confirm=True)
+    released = plan(unfiled, _many(20), confirm='mass_unfile')
     assert released.hold is None and len(released.move) == 20
 
 
@@ -395,7 +395,7 @@ def test_execute_never_touches_unowned_folder(tmp_path):
     foreign = tmp_path / 'Trip'
     stale = lrs.read_owned(tmp_path, '', OWNER)
     (foreign / '.sync.json').write_text(json.dumps({'owner': 'someone-else', 'key': 'alb1', 'items': {}}))
-    pl = lrs.plan([placed(3, key='alb2', folder='Beach'), placed(1, key='alb2', folder='Beach')], stale, 2, True)
+    pl = lrs.plan([placed(3, key='alb2', folder='Beach'), placed(1, key='alb2', folder='Beach')], stale, 2, None)
     pl = lrs.LrPlan(pl.add, pl.update, pl.move, pl.remove + [('alb1', 'as002')],
                     [('alb1', 'Trip', 'Renamed')], None, pl.owned)
     execute(pl, tmp_path)
@@ -453,7 +453,7 @@ def test_preview_counts_and_top_folders():
     wanted = [placed(1, 'alA', 'A'), placed(2, 'alA', 'A'), placed(3, 'alA', 'A'),  # adds
               placed(7, 'alB', 'B'),  # kept where it is
               placed(10, 'alA', 'A')]  # moves from C into A
-    folders = {'alB': owned('alB', 'B', 5, 6, 7), 'alC': owned('alC', 'C', 10)}
+    folders = lrs.Owned({'alB': owned('alB', 'B', 5, 6, 7), 'alC': owned('alC', 'C', 10)})
     out = lrs.preview(wanted, folders)
     assert {k: out[k] for k in ('kept', 'add', 'remove', 'move', 'hold')} == \
         {'kept': 1, 'add': 3, 'remove': 2, 'move': 1, 'hold': None}
@@ -464,12 +464,12 @@ def test_preview_counts_and_top_folders():
 def test_preview_top_keeps_five_most_changed():
     wanted = [placed(n, f'al{n}', f'F{n}') for n in range(1, 8)]
     wanted += [placed(20 + n, 'al1', 'F1') for n in range(3)]
-    out = lrs.preview(wanted, {})
+    out = lrs.preview(wanted, lrs.Owned())
     assert len(out['top']) == 5 and out['top'][0] == {'folder': 'F1', 'add': 4, 'remove': 0}
 
 
 def test_preview_reports_hold():
-    folders = {'alB': owned('alB', 'B', *range(30, 30 + lrs.MASS_MIN))}
+    folders = lrs.Owned({'alB': owned('alB', 'B', *range(30, 30 + lrs.MASS_MIN))})
     out = lrs.preview([], folders)
     # The counts are what Save then a confirmation would do; the hold says the sync would wait first.
     assert out['hold'] == 'mass_remove' and out['remove'] == lrs.MASS_MIN and out['kept'] == 0
@@ -481,3 +481,41 @@ def test_collisions_lists_suffixed_folders_only():
     folders = {'alA': owned('alA', 'lr/Trip-2', 1), 'alB': owned('alB', 'lr/Lake', 2),
                'alC': owned('alC', 'lr/Sea-2', 3), 'alD': owned('alD', 'lr/Old-3')}
     assert lrs.collisions(wanted, folders) == ['lr/Trip-2']
+
+
+def test_owner_names_the_account_by_a_short_hash():
+    import hashlib
+    assert lrs.owner_for('acct-0001') == 'lightroom:' + hashlib.sha256(b'acct-0001').hexdigest()[:16]
+    assert lrs.owner_for('acct-0001') != lrs.owner_for('acct-0002')
+
+
+def test_plan_requires_owned():
+    with pytest.raises(TypeError):
+        lrs.plan([placed(1)], {'alb1': owned('alb1', 'Trip', 1)}, 1, None)
+
+
+def test_plan_confirm_releases_only_the_same_hold():
+    pl = plan([], _many(20), listed=0, confirm='mass_remove')  # confirmed mass_remove, then Adobe lists nothing
+    assert pl.hold == 'empty_library' and pl.remove == [] and pl.move == []
+    pl = plan([placed(0)], _many(20), confirm='mass_unfile')
+    assert pl.hold == 'mass_remove' and pl.remove == []
+
+
+def test_plan_held_renames_nothing():
+    pl = plan([placed(0, folder='Coast')], _many(20))
+    assert pl.hold == 'mass_remove' and pl.rename == []
+    released = plan([placed(0, folder='Coast')], _many(20), confirm='mass_remove')
+    assert released.rename == [('alb1', 'Trip', 'Coast')]
+
+
+def test_execute_never_renames_a_folder_holding_a_subfolder(tmp_path):
+    run(tmp_path, [placed(1)])
+    (tmp_path / 'Trip/Nested').mkdir()  # e.g. another source's folder inside this one
+    (tmp_path / 'Trip/Nested/theirs.jpg').write_bytes(b'x')
+    pl, res = run(tmp_path, [placed(1, folder='Coast'), placed(2, folder='Coast')])
+    assert pl.rename == [('alb1', 'Trip', 'Coast')]
+    assert not (tmp_path / 'Coast').exists() and res.added == 1  # files still synced where it is
+    assert photos(tmp_path / 'Trip') == ['2025-06-02_as001.jpg', '2025-06-03_as002.jpg', 'Nested']
+    assert (tmp_path / 'Trip/Nested/theirs.jpg').read_bytes() == b'x'
+    _, res = run(tmp_path, [], listed=5)  # everything removed: the folder stays for its subfolder
+    assert res.removed == 2 and (tmp_path / 'Trip/Nested/theirs.jpg').exists()

@@ -24,12 +24,11 @@ from homeassistant.util import dt as dt_util
 
 from . import album_image, lightroom_api, lightroom_library
 from .album_layout import PhotoDirMissing
-from .lightroom_api import (AuthRefused, LightroomClient, LightroomError, RenditionUnavailable, Unreachable,
-                            account_id, signin_expires)
+from .lightroom_api import AuthRefused, LightroomClient, LightroomError, Unreachable, account_id, signin_expires
 from .lightroom_catalog import Album, photo_from_dict
 from .lightroom_exif import exif_adder
 from .lightroom_filter import Filter, Placed, filter_from_options, filter_to_options, place
-from .lightroom_sync import DiskFull, collisions, execute, plan, preview, read_owned
+from .lightroom_sync import DiskFull, collisions, execute, owner_for, plan, preview, read_owned
 from .transport import make_transport
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,7 +40,6 @@ SERVICES = ('lightroom_sync', 'lightroom_preview')
 SYNC_ON_START = 'domosenso_photos_lightroom_sync_on_start'
 SIGNIN_WARN = timedelta(days=3)
 SERVICE_USERS = 'domosenso_photos_lightroom_service_users'  # loaded entries counting on the actions
-DEFAULT_PHOTO_DIR = '/config/www/ramka'
 DEFAULT_OPTIONS = {**filter_to_options(Filter()), 'interval_min': 360, 'max_edge': 2560, 'quality': 85,
                    'free_floor': 1_000_000_000}
 STARTUP_DELAY_S = 60
@@ -85,7 +83,7 @@ class LightroomManager:
         self.max_edge, self.quality = int(opts['max_edge']), int(opts['quality'])
         self.free_floor = int(opts['free_floor'])
         # Folders belong to the Adobe account, so a removed and re-added entry takes them back.
-        self.owner = f'lightroom:{entry.unique_id or account_id(entry.data["token"])}'
+        self.owner = owner_for(entry.unique_id or account_id(entry.data['token']))
         self.store = Store(hass, 1, store_key(entry.entry_id))
         self.data: dict = {}
         self.lock = asyncio.Lock()
@@ -182,11 +180,11 @@ class LightroomManager:
             return {**self.public(), 'status': 'syncing'}
         async with self.lock:
             async_dispatcher_send(self.hass, signal(self.entry.entry_id))  # shows syncing
-            # Only a hold that exists now is confirmed; a hold this run creates stays.
-            confirm = confirm and self.data.get('status') == 'awaiting_confirmation'
+            # Only the hold that exists now, and that the user saw, is confirmed; any other hold stays.
+            held = self.data.get('hold') if self.data.get('status') == 'awaiting_confirmation' else None
             now = int(time.time())
             try:
-                update = await self._sync_body(confirm, now)
+                update = await self._sync_body(held if confirm else None, now)
             except _Failed as err:
                 update = {'status': err.status, 'error': err.error}
             except PhotoDirMissing:
@@ -217,7 +215,7 @@ class LightroomManager:
             async_dispatcher_send(self.hass, signal(self.entry.entry_id))  # the lock is free: no longer syncing
         return self.public()
 
-    async def _sync_body(self, confirm: bool, now: int) -> dict:
+    async def _sync_body(self, confirm: str | None, now: int) -> dict:
         if not await self._run_blocking(self.photo_dir.is_dir):  # unmounted storage: touch nothing
             raise PhotoDirMissing
         await self.oauth.async_ensure_token_valid()
@@ -234,14 +232,14 @@ class LightroomManager:
         resting = lightroom_library.resting(self.data.get('skipped'), self.data.get('skipped_at'),
                                             library.photos, now)
         tried = []
+        rendition = lightroom_library.Renditions(self.client, library.catalog, self.max_edge)
 
         async def fetch(p: Placed) -> bytes | None:
             if p.photo.asset_id in resting:
                 return None  # skipped less than a day ago and unchanged: no request
             tried.append(p.photo.asset_id)
-            try:
-                raw = await self.client.image(library.catalog, p.photo.asset_id, self.max_edge)
-            except RenditionUnavailable:
+            raw = await rendition(p.photo.asset_id)  # raises Unreachable on an outage
+            if raw is None:
                 return None
             try:
                 return await self.hass.async_add_executor_job(

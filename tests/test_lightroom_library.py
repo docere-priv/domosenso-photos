@@ -100,3 +100,59 @@ def test_next_skips_keeps_first_try_time_for_carried_skips():
     assert lib.next_skips(['a1'], photos, True, 500, 1000) == ({'a1': changed['a1']}, 1000)
     assert lib.next_skips(['a1'], photos, False, 500, 1000) == ({'a1': changed['a1']}, 500)
     assert lib.next_skips(['a1'], photos, False, None, 1000) == ({'a1': changed['a1']}, 1000)
+
+
+api = importlib.import_module('lightroom_library_pkg.lightroom_api')
+
+
+class ImageClient:
+    """image() answers from a script per asset: bytes, or an exception to raise."""
+
+    def __init__(self, answers):
+        self.answers, self.asked = answers, []
+
+    async def image(self, catalog, asset_id, max_edge):
+        self.asked.append(asset_id)
+        answer = self.answers[asset_id]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def _outage():
+    return api.RenditionUnavailable('HTTP 503', transient=True)
+
+
+def test_renditions_skip_a_failed_photo():
+    client = ImageClient({'a': _outage(), 'b': api.RenditionUnavailable('HTTP 404'), 'c': b'jpeg'})
+    get = lib.Renditions(client, 'cat', 2560)
+    assert [asyncio.run(get(x)) for x in 'abc'] == [None, None, b'jpeg']
+
+
+def test_renditions_five_outages_in_a_row_are_unreachable():
+    answers = {f'o{n}': _outage() for n in range(5)}
+    get = lib.Renditions(ImageClient(answers), 'cat', 2560)
+
+    async def all_five():
+        for n in range(4):
+            assert await get(f'o{n}') is None
+        await get('o4')
+    try:
+        asyncio.run(all_five())
+    except api.Unreachable:
+        pass
+    else:
+        raise AssertionError('five outages in a row did not end the run')
+
+
+def test_renditions_an_answer_resets_the_outage_run():
+    answers = {f'o{n}': _outage() for n in range(8)}
+    answers.update(ok=b'jpeg', gone=api.RenditionUnavailable('HTTP 404'))
+    get = lib.Renditions(ImageClient(answers), 'cat', 2560)
+
+    async def mixed():
+        out = []
+        for aid in ('o0', 'o1', 'o2', 'o3', 'ok', 'o4', 'o5', 'o6', 'o7', 'gone', 'o0', 'o1'):
+            out.append(await get(aid))
+        return out
+    assert asyncio.run(mixed()).count(None) == 11

@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .lightroom_api import LightroomClient
+from .lightroom_api import LightroomClient, RenditionUnavailable, Unreachable
 from .lightroom_catalog import Album, Photo, photo_to_dict, to_album, to_photo
 
 SKIP_REST_S = 86400
+OUTAGE_RUN = 5  # renditions in a row failing for network or 5xx reasons: Adobe is down, not the photos
 # Fields whose presence is counted over the raw assets (diagnostics shows the counts, never values).
 COVERAGE_FIELDS = ('payload.ratings', 'payload.reviews', 'payload.captureDate', 'payload.develop.userUpdated',
                    'payload.xmp.tiff.Make', 'payload.xmp.aux.Lens')
@@ -71,3 +72,23 @@ def next_skips(skipped_now: list[str], photos: list[Photo], tried_now: bool, ski
     if not skipped:
         return {}, None
     return skipped, (now if tried_now or skipped_at is None else skipped_at)
+
+
+class Renditions:
+    """One run's rendition fetches: a failed photo is skipped (None); OUTAGE_RUN transient failures in a
+    row end the run as unreachable, so an outage does not mark the whole library skipped."""
+
+    def __init__(self, client: LightroomClient, catalog: str, max_edge: int):
+        self._client, self._catalog, self._max_edge = client, catalog, max_edge
+        self._in_a_row = 0
+
+    async def __call__(self, asset_id: str) -> bytes | None:
+        try:
+            raw = await self._client.image(self._catalog, asset_id, self._max_edge)
+        except RenditionUnavailable as err:
+            self._in_a_row = self._in_a_row + 1 if err.transient else 0
+            if self._in_a_row >= OUTAGE_RUN:
+                raise Unreachable(f'{OUTAGE_RUN} renditions in a row failed') from err
+            return None
+        self._in_a_row = 0
+        return raw

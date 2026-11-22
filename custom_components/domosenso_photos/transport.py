@@ -2,15 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 
 import aiohttp
 
-from .album_share import MAX_BODY, Unreachable
+from .album_share import MAX_BODY, Transport, Unreachable
 
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=900, sock_connect=30, sock_read=60)
 CHUNK = 1 << 20
-Transport = Callable[..., Awaitable[tuple[int, str, bytes]]]
 
 
 def make_transport(session: aiohttp.ClientSession, with_headers: bool = False) -> Transport:
