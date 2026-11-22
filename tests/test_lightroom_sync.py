@@ -519,3 +519,31 @@ def test_execute_never_renames_a_folder_holding_a_subfolder(tmp_path):
     assert (tmp_path / 'Trip/Nested/theirs.jpg').read_bytes() == b'x'
     _, res = run(tmp_path, [], listed=5)  # everything removed: the folder stays for its subfolder
     assert res.removed == 2 and (tmp_path / 'Trip/Nested/theirs.jpg').exists()
+
+
+def _progress_run(photo_dir, placed_list, fetch=_fetch):
+    calls = []
+    pl = lrs.plan(placed_list, lrs.read_owned(photo_dir, '', OWNER), len(placed_list), None)
+    asyncio.run(lrs.execute(pl, photo_dir, OWNER, fetch, _direct, 0, timezone.utc, NOW,
+                            progress=lambda *a: calls.append(a)))
+    return calls
+
+
+def test_execute_reports_progress(tmp_path):
+    run(tmp_path, [placed(1)])
+    calls = _progress_run(tmp_path, [placed(2), placed(3), placed(4)])
+    assert calls == [('downloading', 0, 4), ('downloading', 1, 4), ('downloading', 2, 4),
+                     ('downloading', 3, 4), ('removing', 3, 4), ('removing', 4, 4)]
+
+
+def test_execute_progress_counts_skipped(tmp_path):
+    async def one_missing(p):
+        return None if p.photo.asset_id == 'as001' else JPEG
+
+    calls = _progress_run(tmp_path, [placed(1), placed(2)], fetch=one_missing)
+    assert calls[-1] == ('downloading', 2, 2)
+
+
+def test_execute_progress_nothing_to_do(tmp_path):
+    run(tmp_path, [placed(1)])
+    assert _progress_run(tmp_path, [placed(1)]) == []

@@ -43,6 +43,7 @@ SERVICE_USERS = 'domosenso_photos_lightroom_service_users'  # loaded entries cou
 DEFAULT_OPTIONS = {**filter_to_options(Filter()), 'interval_min': 360, 'max_edge': 2560, 'quality': 85,
                    'free_floor': 1_000_000_000}
 STARTUP_DELAY_S = 60
+PROGRESS_EVERY_S = 5  # at most one progress update per 5 s reaches the state machine
 UNLOAD_WAIT_S = 30
 _BAD_IMAGE = (UnidentifiedImageError, Image.DecompressionBombError, album_image.HeifUnavailable, OSError, ValueError)
 _BAD_RESPONSE = (LightroomError, KeyError, IndexError, AttributeError, TypeError, ValueError)
@@ -96,6 +97,10 @@ class LightroomManager:
         self._unsubs: list = []
         self._task: asyncio.Task | None = None
         self._running: set[asyncio.Task] = set()
+        # In memory only: how far the running sync is (all None outside a sync).
+        self.progress: dict = {'phase': None, 'done': None, 'total': None}
+        self._progress_sent = 0.0
+        self._last_run_complete = False
 
     async def _token(self) -> str:
         await self.oauth.async_ensure_token_valid()
@@ -103,6 +108,7 @@ class LightroomManager:
 
     async def async_load(self) -> None:
         self.data = await self.store.async_load() or {}
+        self._last_run_complete = bool(self.data.get('last_success'))
 
     def start(self) -> None:
         self._issues()
@@ -144,7 +150,25 @@ class LightroomManager:
                 'signin_expires': expires.isoformat() if expires else None,
                 'cache_date': (d.get('catalog') or {}).get('read_at'),
                 'path_collisions': list(d.get('collisions') or ()),
-                'ambiguous_folders': [p for a in d.get('ambiguous') or () for p in a['paths']]}
+                'ambiguous_folders': [p for a in d.get('ambiguous') or () for p in a['paths']],
+                **self.progress, 'progress': self._percent()}
+
+    def _percent(self) -> int | None:
+        if not self.lock.locked():
+            return 100 if self._last_run_complete else None
+        phase, done, total = self.progress['phase'], self.progress['done'], self.progress['total']
+        if phase in (None, 'reading_library') or total is None:
+            return None
+        return 100 if total == 0 else done * 100 // total
+
+    def _report(self, phase: str, done: int, total: int) -> None:
+        """Progress from the running sync; pushed at a phase change, at the end, else every 5 s."""
+        changed = phase != self.progress['phase']
+        self.progress = {'phase': phase, 'done': done, 'total': total}
+        now = time.monotonic()
+        if changed or done == total or now - self._progress_sent >= PROGRESS_EVERY_S:
+            self._progress_sent = now
+            async_dispatcher_send(self.hass, signal(self.entry.entry_id))
 
     async def preview(self, options: dict | None = None) -> dict:
         """What a sync with these options (default: the entry's) would do, from the cache only."""
@@ -207,6 +231,8 @@ class LightroomManager:
             except Exception as err:  # noqa: BLE001 - a bug must not stop the timer
                 _LOGGER.error('Lightroom sync failed unexpectedly: %s', type(err).__name__)
                 update = {'status': 'error', 'error': 'unexpected'}
+            self.progress = {'phase': None, 'done': None, 'total': None}
+            self._last_run_complete = update['status'] == 'ok'
             self.data.update(update, last_sync=now)
             if update['status'] in ('ok', 'awaiting_confirmation'):
                 self.data['last_success'] = now
@@ -220,6 +246,7 @@ class LightroomManager:
             raise PhotoDirMissing
         await self.oauth.async_ensure_token_valid()
         # Nothing in the photo folder is written until the whole library has been read.
+        self._report('reading_library', 0, 0)
         library = await lightroom_library.read_library(self.client)
         self.data.update(catalog=lightroom_library.cache(library, now), coverage=library.coverage)
         await self._save()
@@ -248,7 +275,7 @@ class LightroomManager:
                 return None
 
         run = await execute(lr_plan, self.photo_dir, self.owner, fetch, self._run_blocking, self.free_floor,
-                            dt_util.get_default_time_zone(), now)
+                            dt_util.get_default_time_zone(), now, progress=self._report)
         skipped, skipped_at = lightroom_library.next_skips(
             run.skipped, library.photos, any(a in tried for a in run.skipped), self.data.get('skipped_at'), now)
         names = {a.id: a.name for a in library.albums.values()}

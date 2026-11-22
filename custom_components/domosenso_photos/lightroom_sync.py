@@ -321,7 +321,8 @@ class _Exec:
 
 
 async def execute(plan: LrPlan, photo_dir: Path, owner: str, fetch: Callable[[Placed], Awaitable[bytes | None]],
-                  run_blocking: RunBlocking, free_floor: int, tz: tzinfo, now: int) -> RunResult:
+                  run_blocking: RunBlocking, free_floor: int, tz: tzinfo, now: int,
+                  progress: Callable[[str, int, int], None] | None = None) -> RunResult:
     """Apply the plan; raises PhotoDirMissing (nothing touched) or DiskFull (stops before the next write)."""
     if not await run_blocking(photo_dir.is_dir):  # unmounted storage: touch nothing, never re-create it
         raise PhotoDirMissing
@@ -332,19 +333,27 @@ async def execute(plan: LrPlan, photo_dir: Path, owner: str, fetch: Callable[[Pl
             await run.io(run.rename, dkey, old, wanted)
         writes = ([(p, None, 'added') for p in plan.add] + [(p, None, 'updated') for p in plan.update]
                   + [(p, old, 'moved') for p, old in plan.move])
-        for p, old, counter in writes:
+        total = len(writes) + len(plan.remove)
+        report = progress or (lambda phase, done, total: None)
+        if writes:
+            report('downloading', 0, total)
+        for i, (p, old, counter) in enumerate(writes, 1):
             if await run.io(free_bytes, photo_dir) < free_floor:
                 raise DiskFull
             data = await fetch(p)
             if data is None or not await run.io(run.write, p, data, tz):
                 result.skipped.append(p.photo.asset_id)
-                continue
-            if old is not None:  # the new copy and its marker are on disk; now the old one goes
-                await run.io(run.drop, old, p.photo.asset_id)
-            setattr(result, counter, getattr(result, counter) + 1)
-        for dkey, asset in plan.remove:
+            else:
+                if old is not None:  # the new copy and its marker are on disk; now the old one goes
+                    await run.io(run.drop, old, p.photo.asset_id)
+                setattr(result, counter, getattr(result, counter) + 1)
+            report('downloading', i, total)
+        if plan.remove:
+            report('removing', len(writes), total)
+        for i, (dkey, asset) in enumerate(plan.remove, len(writes) + 1):
             if await run.io(run.drop, dkey, asset):
                 result.removed += 1
+            report('removing', i, total)
     except OSError as err:
         if err.errno == errno.ENOSPC:
             raise DiskFull from err

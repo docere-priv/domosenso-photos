@@ -8,6 +8,8 @@
   actions, a Lightroom sensor, safety holds and repair issues (including `signin_expiring`).
 - Filter for the Lightroom photos (ratings, flag, albums, dates, edited, camera or lens) with a
   preview of what a change would add and remove before it is saved.
+- Lightroom: progress while syncing (sensor attributes `phase`, `done`, `total`; sensor
+  *Lightroom sync progress* in %).
 - Photos keep their colour profile (ICC); wide-gamut photos, such as iPhone originals, no longer shift in colour.
 
 ## 0.2.0 — 2026-11-22

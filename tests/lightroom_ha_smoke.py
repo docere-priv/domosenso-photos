@@ -395,7 +395,26 @@ async def main():
         check(again['type'] == 'abort' and again['reason'] == 'already_configured', f'second entry not aborted {again}')
 
         # --- First sync: exactly the default-filter photos, in album / month folders, marked, EXIF, no GPS.
+        from homeassistant.helpers import entity_registry as er
+        from homeassistant.helpers.event import async_track_state_change_event
+        ent_reg = er.async_get(hass)
+        lr_sensor = ent_reg.async_get_entity_id('sensor', DOMAIN, f'{entry.entry_id}_lightroom')
+        progress_sensor = ent_reg.async_get_entity_id('sensor', DOMAIN, f'{entry.entry_id}_lightroom_progress')
+        check(lr_sensor and progress_sensor, f'sensors {lr_sensor} {progress_sensor}')
+        check(hass.states.get(progress_sensor).state == 'unknown', f'progress before a sync {hass.states.get(progress_sensor)}')
+        seen = []
+        stop_seen = async_track_state_change_event(
+            hass, [lr_sensor], lambda ev: seen.append(dict(ev.data['new_state'].attributes)))
         resp = await call('lightroom_sync', entry_id=entry.entry_id)
+        await hass.async_block_till_done()
+        stop_seen()
+        phases = [a.get('phase') for a in seen]
+        check('reading_library' in phases and any(a.get('phase') == 'downloading' and a.get('total', 0) > 0 for a in seen),
+              f'progress phases {phases}')
+        final = hass.states.get(lr_sensor).attributes
+        check(final.get('phase') is None and final.get('done') is None and final.get('total') is None, f'progress after {final}')
+        check(hass.states.get(progress_sensor).state == '100' and hass.states.get(progress_sensor).attributes.get('unit_of_measurement') == '%',
+              f'progress sensor {hass.states.get(progress_sensor)}')
         (lib,) = resp['libraries']
         expected = wanted(fake.assets, fake.members)
         count = sum(map(len, expected.values()))

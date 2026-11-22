@@ -422,7 +422,12 @@ status as its state: `ok`, `syncing`, `awaiting_confirmation`, `unreachable`, `d
 `error` (see `error`). Its attributes: `photos`, `folders` (not recorded), `last_sync`,
 `last_success`, `added`, `updated`, `moved`, `removed`, `skipped_count`, `error`,
 `signin_expires`, `cache_date`, `path_collisions` and `ambiguous_folders` (the last two not
-recorded). The actions `domosenso_photos.lightroom_sync` (`entry_id`, `confirm`) and
+recorded). While a sync runs, `phase` (`reading_library`, `downloading`, `removing`), `done` and
+`total` say how far it is: `total` is the photos to write and remove, `done` those handled so far
+(skipped ones included); outside a sync the three are empty. They are updated at most every
+5 seconds. The sensor `sensor.domosenso_photos_lightroom_sync_progress` shows the same in %:
+unknown while the library is read and before the first sync, 100 after a sync that finished.
+The actions `domosenso_photos.lightroom_sync` (`entry_id`, `confirm`) and
 `domosenso_photos.lightroom_preview` (`entry_id`) are for administrators and return a response.
 **Configure → Sync now** also syncs in the background.
 

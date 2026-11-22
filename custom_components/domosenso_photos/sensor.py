@@ -9,12 +9,12 @@ from .lightroom import KIND as LIGHTROOM, signal as lightroom_signal
 
 LIGHTROOM_ATTRIBUTES = ('photos', 'folders', 'last_sync', 'last_success', 'added', 'updated', 'moved', 'removed',
                         'skipped_count', 'error', 'signin_expires', 'cache_date', 'path_collisions',
-                        'ambiguous_folders')
+                        'ambiguous_folders', 'phase', 'done', 'total')
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
     if entry.data.get('kind', 'albums') == LIGHTROOM:
-        async_add_entities([LightroomSensor(entry)])
+        async_add_entities([LightroomSensor(entry), LightroomProgressSensor(entry)])
     else:
         async_add_entities([AlbumsSensor(hass.data[DATA])])
 
@@ -62,6 +62,27 @@ class LightroomSensor(SensorEntity):
     def extra_state_attributes(self) -> dict:
         public = self._entry.runtime_data.public()
         return {k: public[k] for k in LIGHTROOM_ATTRIBUTES}
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(async_dispatcher_connect(self.hass, lightroom_signal(self._entry.entry_id),
+                                                      self.async_write_ha_state))
+
+
+class LightroomProgressSensor(SensorEntity):
+    """How far the running sync is, in %; 100 after a finished run, unknown before one."""
+
+    _attr_name = 'DomoSenso Photos Lightroom sync progress'
+    _attr_icon = 'mdi:progress-download'
+    _attr_native_unit_of_measurement = '%'
+    _attr_should_poll = False
+
+    def __init__(self, entry):
+        self._entry = entry
+        self._attr_unique_id = f'{entry.entry_id}_lightroom_progress'
+
+    @property
+    def native_value(self) -> int | None:
+        return self._entry.runtime_data.public()['progress']
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(async_dispatcher_connect(self.hass, lightroom_signal(self._entry.entry_id),
