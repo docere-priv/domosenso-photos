@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Adobe Lightroom (cloud) as a second photo source, next to Synology albums: sign in through
+  Application Credentials, one folder per Lightroom album and one per month for photos in no album,
+  edits as in Lightroom, read-only towards Adobe. Adds the `lightroom_sync` and `lightroom_preview`
+  actions, a Lightroom sensor, safety holds and repair issues (including `signin_expiring`).
+- Filter for the Lightroom photos (ratings, flag, albums, dates, edited, camera or lens) with a
+  preview of what a change would add and remove before it is saved.
 - Photos keep their colour profile (ICC); wide-gamut photos, such as iPhone originals, no longer shift in colour.
 
 ## 0.1.2 — 2026-11-21
