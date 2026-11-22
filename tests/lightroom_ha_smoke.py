@@ -399,9 +399,9 @@ async def main():
         from homeassistant.helpers.event import async_track_state_change_event
         ent_reg = er.async_get(hass)
         lr_sensor = ent_reg.async_get_entity_id('sensor', DOMAIN, f'{entry.entry_id}_lightroom')
-        progress_sensor = ent_reg.async_get_entity_id('sensor', DOMAIN, f'{entry.entry_id}_lightroom_progress')
-        check(lr_sensor and progress_sensor, f'sensors {lr_sensor} {progress_sensor}')
-        check(hass.states.get(progress_sensor).state == 'unknown', f'progress before a sync {hass.states.get(progress_sensor)}')
+        check(lr_sensor and not ent_reg.async_get_entity_id('sensor', DOMAIN, f'{entry.entry_id}_lightroom_progress'),
+              'one Lightroom sensor, no separate progress sensor')
+        check(hass.states.get(lr_sensor).attributes.get('progress') is None, f'progress before a sync {hass.states.get(lr_sensor)}')
         seen = []
         stop_seen = async_track_state_change_event(
             hass, [lr_sensor], lambda ev: seen.append(dict(ev.data['new_state'].attributes)))
@@ -413,8 +413,7 @@ async def main():
               f'progress phases {phases}')
         final = hass.states.get(lr_sensor).attributes
         check(final.get('phase') is None and final.get('done') is None and final.get('total') is None, f'progress after {final}')
-        check(hass.states.get(progress_sensor).state == '100' and hass.states.get(progress_sensor).attributes.get('unit_of_measurement') == '%',
-              f'progress sensor {hass.states.get(progress_sensor)}')
+        check(final.get('progress') == 100 and entry.runtime_data.data.get('library_pages', 0) > 0, f'progress after a sync {final}')
         (lib,) = resp['libraries']
         expected = wanted(fake.assets, fake.members)
         count = sum(map(len, expected.values()))
@@ -554,7 +553,23 @@ async def main():
         check('ambiguous_folders' not in issues() and files(photo_dir) == expected and not moved.exists(),
               f'moved folder not adopted back {files(photo_dir)}')
 
-        # --- Settings: the folder can change after a confirmation; the old folder is left as it is.
+        # --- Reading the library reports its pages against the last read's count.
+        lr.PROGRESS_EVERY_S = 0
+        pages_before = entry.runtime_data.data['library_pages']
+        seen = []
+        stop_seen = async_track_state_change_event(
+            hass, [lr_sensor], lambda ev: seen.append(dict(ev.data['new_state'].attributes)))
+        await call('lightroom_sync', entry_id=entry.entry_id)
+        await hass.async_block_till_done()
+        stop_seen()
+        lr.PROGRESS_EVERY_S = 5
+        reading = [a for a in seen if a.get('phase') == 'reading_library']
+        check(reading and reading[-1]['done'] == pages_before and reading[-1]['total'] == pages_before
+              and reading[-1]['progress'] == 99 and any(0 < a['progress'] < 99 for a in reading if a['progress'] is not None),
+              f'reading progress {[(a["done"], a["total"], a["progress"]) for a in reading]}')
+
+        # --- Settings: the folder can change after a confirmation, also during a sync (which stops);
+        # the old folder is left as it is.
         async def settings_flow(values):
             o = await hass.config_entries.options.async_init(entry.entry_id)
             o = await hass.config_entries.options.async_configure(o['flow_id'], {'next_step_id': 'settings'})
@@ -571,11 +586,18 @@ async def main():
         check(r['type'] == 'form' and r['errors'] == {'photo_dir': 'invalid_photo_dir'}, f'missing folder accepted {r}')
         other = Path(config_dir, 'www', 'lr-other')
         other.mkdir()
-        async with entry.runtime_data.lock:
-            r = await settings_flow({'photo_dir': str(other)})
-        check(r['type'] == 'form' and r['step_id'] == 'lightroom_settings' and r['errors'] == {'base': 'sync_running'}
-              and entry.data['photo_dir'] == str(photo_dir), f'folder change during a sync {r}')
         before = tree(photo_dir / 'lr')
+        fake.delay = 0.5
+        manager = entry.runtime_data
+
+        async def background_sync():
+            try:
+                return await manager.sync()
+            except BaseException as err:  # noqa: BLE001 - cancelled by the folder change
+                return err
+
+        running = asyncio.ensure_future(background_sync())
+        await wait_for(lambda: manager.lock.locked(), 'sync did not start')
         r = await settings_flow({'photo_dir': str(other), 'prefix': '', 'interval_min': 120})
         check(r['type'] == 'form' and r['step_id'] == 'lightroom_folder_confirm'
               and r['description_placeholders'] == {'old': f'{photo_dir}/lr', 'new': str(other)}, f'confirm step {r}')
@@ -583,6 +605,9 @@ async def main():
         r = await hass.config_entries.options.async_configure(r['flow_id'], {})
         check(r['type'] == 'create_entry' and entry.data['photo_dir'] == str(other) and entry.data['prefix'] == ''
               and entry.options['interval_min'] == 120, f'folder change {r} {entry.data.get("photo_dir")}')
+        outcome = await running
+        check(isinstance(outcome, asyncio.CancelledError), f'the running sync was not stopped: {outcome}')
+        fake.delay = 0.0
         in_other = {k.removeprefix('lr/').replace('-2', ''): v for k, v in expected.items()}
         m = await synced(entry, old, lambda m: {k.lstrip('/'): v for k, v in files(other, '').items()} == in_other,
                          f'new folder {files(other, "")}')
@@ -616,8 +641,8 @@ async def main():
         await hass.async_block_till_done()
         check('signin_expiring' in issues(), f'signin issue {issues()}')
         check(entry.runtime_data.data.get('status') == 'error' and entry.runtime_data.data.get('last_success')
-              and hass.states.get(progress_sensor).state == 'unknown',
-              f'progress after a reload following a failed run {hass.states.get(progress_sensor)}')
+              and hass.states.get(lr_sensor).attributes.get('progress') is None,
+              f'progress after a reload following a failed run {hass.states.get(lr_sensor)}')
         hass.config_entries.async_update_entry(entry, data={**entry.data, 'token': token})
         await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()

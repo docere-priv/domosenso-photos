@@ -140,7 +140,7 @@
       },
       "lightroom_folder_confirm": {
         "title": "Fotoordner ändern",
-        "description": "Die Fotos werden in {new} synchronisiert. Jedes Foto wird erneut heruntergeladen, außer der Ordner enthält bereits die Fotos dieser Bibliothek. Die Fotos in {old} bleiben, wo sie sind: Die Integration löscht sie nicht. Absenden ändert den Ordner."
+        "description": "Die Fotos werden in {new} synchronisiert. Jedes Foto wird erneut heruntergeladen, außer der Ordner enthält bereits die Fotos dieser Bibliothek. Die Fotos in {old} bleiben, wo sie sind: Die Integration löscht sie nicht. Eine laufende Synchronisierung wird beendet. Absenden ändert den Ordner."
       },
       "filter": {
         "title": "Filter",
@@ -205,8 +205,7 @@
       "invalid_range": "Dieses Datum liegt vor dem Anfangsdatum.",
       "ratings_empty": "Wählen Sie mindestens eine Bewertung.",
       "invalid_photo_dir": "Geben Sie den absoluten Pfad eines vorhandenen Ordners ein, zum Beispiel /config/www/ramka.",
-      "invalid_prefix": "Geben Sie einen Ordner innerhalb des Fotoordners ohne ..-Teile an oder lassen Sie das Feld leer.",
-      "sync_running": "Eine Synchronisierung läuft. Versuche es erneut, wenn sie beendet ist."
+      "invalid_prefix": "Geben Sie einen Ordner innerhalb des Fotoordners ohne ..-Teile an oder lassen Sie das Feld leer."
     },
     "abort": {
       "not_loaded": "DomoSenso Photos ist nicht geladen. Laden Sie die Integration neu und versuchen Sie es erneut.",

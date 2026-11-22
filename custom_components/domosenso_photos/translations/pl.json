@@ -140,7 +140,7 @@
       },
       "lightroom_folder_confirm": {
         "title": "Zmień folder zdjęć",
-        "description": "Zdjęcia będą synchronizowane do {new}. Każde zdjęcie zostanie pobrane ponownie, chyba że ten folder zawiera już zdjęcia tej biblioteki. Zdjęcia w {old} zostają na miejscu: integracja ich nie usuwa. Zatwierdź, aby zmienić folder."
+        "description": "Zdjęcia będą synchronizowane do {new}. Każde zdjęcie zostanie pobrane ponownie, chyba że ten folder zawiera już zdjęcia tej biblioteki. Zdjęcia w {old} zostają na miejscu: integracja ich nie usuwa. Trwająca synchronizacja zostanie zatrzymana. Zatwierdź, aby zmienić folder."
       },
       "filter": {
         "title": "Filtr",
@@ -205,8 +205,7 @@
       "invalid_range": "Ta data jest wcześniejsza niż data początkowa.",
       "ratings_empty": "Wybierz co najmniej jedną ocenę.",
       "invalid_photo_dir": "Podaj bezwzględną ścieżkę istniejącego folderu, na przykład /config/www/ramka.",
-      "invalid_prefix": "Podaj folder wewnątrz folderu zdjęć, bez części .., albo zostaw pole puste.",
-      "sync_running": "Trwa synchronizacja. Spróbuj ponownie, gdy się zakończy."
+      "invalid_prefix": "Podaj folder wewnątrz folderu zdjęć, bez części .., albo zostaw pole puste."
     },
     "abort": {
       "not_loaded": "DomoSenso Photos nie jest załadowana. Przeładuj integrację i spróbuj ponownie.",

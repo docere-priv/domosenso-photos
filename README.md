@@ -410,8 +410,8 @@ shows it first.
 | Keep free on disk | 1 GB | 0.1-1000 GB |
 
 Settings also holds the **Photo folder** and the **Subfolder** chosen when the library was added.
-Changing either asks for a confirmation first, and is refused while a sync runs. After it the
-entry reloads and syncs into the new folder: every photo is downloaded again, unless that folder
+Changing either asks for a confirmation first; a running sync is stopped. After it the entry
+reloads and syncs into the new folder: every photo is downloaded again, unless that folder
 already holds this library's photos (switching back to an earlier folder downloads only what
 changed). The photos in the old folder are left where they are; the integration does not delete
 them.
@@ -429,11 +429,15 @@ status as its state: `ok`, `syncing`, `awaiting_confirmation`, `unreachable`, `d
 `error` (see `error`). Its attributes: `photos`, `folders` (not recorded), `last_sync`,
 `last_success`, `added`, `updated`, `moved`, `removed`, `skipped_count`, `error`,
 `signin_expires`, `cache_date`, `path_collisions` and `ambiguous_folders` (the last two not
-recorded). While a sync runs, `phase` (`reading_library`, `downloading`, `removing`), `done` and
-`total` say how far it is: `total` is the photos to write and remove, `done` those handled so far
-(skipped ones included); outside a sync the three are empty. They are updated at most every
-5 seconds. The sensor `sensor.domosenso_photos_lightroom_sync_progress` shows the same in %:
-unknown while the library is read and before the first sync, 100 after a sync that finished.
+recorded). While a sync runs, `phase`, `done`, `total` and `progress` (in %) say how far it is:
+- `reading_library`: `done` counts the listing pages read so far (a library of 40,000 photos takes
+  several hundred), `total` is the count of the last read (empty on the first one), and `progress`
+  stays at 99 at most until the reading ends;
+- `downloading`, then `removing`: `total` is the photos to write and remove, `done` those handled
+  so far (skipped ones included).
+
+Outside a sync `phase`, `done` and `total` are empty and `progress` is 100 after a sync that
+finished, else empty. They are updated at most every 5 seconds.
 The actions `domosenso_photos.lightroom_sync` (`entry_id`, `confirm`) and
 `domosenso_photos.lightroom_preview` (`entry_id`) are for administrators and return a response.
 **Configure → Sync now** also syncs in the background.

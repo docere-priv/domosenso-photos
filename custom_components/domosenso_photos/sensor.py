@@ -2,19 +2,24 @@
 from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .albums import DATA, SIGNAL
-from .lightroom import KIND as LIGHTROOM, signal as lightroom_signal
+from .lightroom import DOMAIN, KIND as LIGHTROOM, signal as lightroom_signal
 
 LIGHTROOM_ATTRIBUTES = ('photos', 'folders', 'last_sync', 'last_success', 'added', 'updated', 'moved', 'removed',
                         'skipped_count', 'error', 'signin_expires', 'cache_date', 'path_collisions',
-                        'ambiguous_folders', 'phase', 'done', 'total')
+                        'ambiguous_folders', 'phase', 'done', 'total', 'progress')
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
     if entry.data.get('kind', 'albums') == LIGHTROOM:
-        async_add_entities([LightroomSensor(entry), LightroomProgressSensor(entry)])
+        # A separate progress sensor existed briefly; its progress is now an attribute here.
+        registry = er.async_get(hass)
+        if old := registry.async_get_entity_id('sensor', DOMAIN, f'{entry.entry_id}_lightroom_progress'):
+            registry.async_remove(old)
+        async_add_entities([LightroomSensor(entry)])
     else:
         async_add_entities([AlbumsSensor(hass.data[DATA])])
 
@@ -67,23 +72,3 @@ class LightroomSensor(SensorEntity):
         self.async_on_remove(async_dispatcher_connect(self.hass, lightroom_signal(self._entry.entry_id),
                                                       self.async_write_ha_state))
 
-
-class LightroomProgressSensor(SensorEntity):
-    """How far the running sync is, in %; 100 after a finished run, unknown before one."""
-
-    _attr_name = 'DomoSenso Photos Lightroom sync progress'
-    _attr_icon = 'mdi:progress-download'
-    _attr_native_unit_of_measurement = '%'
-    _attr_should_poll = False
-
-    def __init__(self, entry):
-        self._entry = entry
-        self._attr_unique_id = f'{entry.entry_id}_lightroom_progress'
-
-    @property
-    def native_value(self) -> int | None:
-        return self._entry.runtime_data.public()['progress']
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(async_dispatcher_connect(self.hass, lightroom_signal(self._entry.entry_id),
-                                                      self.async_write_ha_state))

@@ -157,11 +157,13 @@ class LightroomManager:
         if not self.lock.locked():
             return 100 if self._last_run_complete else None
         phase, done, total = self.progress['phase'], self.progress['done'], self.progress['total']
-        if phase in (None, 'reading_library') or total is None:
+        if phase is None or total is None:
             return None
+        if phase == 'reading_library':  # an estimate from the last read: never 100 before it ends
+            return min(99, done * 100 // total) if total else None
         return 100 if total == 0 else done * 100 // total
 
-    def _report(self, phase: str, done: int, total: int) -> None:
+    def _report(self, phase: str, done: int, total: int | None) -> None:
         """Progress from the running sync; pushed at a phase change, at the end, else every 5 s."""
         changed = phase != self.progress['phase']
         self.progress = {'phase': phase, 'done': done, 'total': total}
@@ -246,9 +248,22 @@ class LightroomManager:
             raise PhotoDirMissing
         await self.oauth.async_ensure_token_valid()
         # Nothing in the photo folder is written until the whole library has been read.
-        self._report('reading_library', 0, 0)
-        library = await lightroom_library.read_library(self.client)
-        self.data.update(catalog=lightroom_library.cache(library, now), coverage=library.coverage)
+        # Reading a large library takes minutes: count its listing pages against the last read's.
+        expected, pages = self.data.get('library_pages'), 0
+        self._report('reading_library', 0, expected)
+
+        def page_read() -> None:
+            nonlocal pages
+            pages += 1
+            self._report('reading_library', pages, expected)
+
+        self.client.on_page = page_read
+        try:
+            library = await lightroom_library.read_library(self.client)
+        finally:
+            self.client.on_page = None
+        self.data.update(catalog=lightroom_library.cache(library, now), coverage=library.coverage,
+                         library_pages=pages)
         await self._save()
 
         placed = place(library.photos, self.filter, library.albums, self.prefix, dt_util.now().date())

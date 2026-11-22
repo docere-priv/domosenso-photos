@@ -140,7 +140,7 @@
       },
       "lightroom_folder_confirm": {
         "title": "Change the photo folder",
-        "description": "Photos will be synced into {new}. Every photo is downloaded again, unless that folder already holds this library's photos. The photos in {old} stay where they are: the integration does not delete them. Submit to change the folder."
+        "description": "Photos will be synced into {new}. Every photo is downloaded again, unless that folder already holds this library's photos. The photos in {old} stay where they are: the integration does not delete them. A running sync is stopped. Submit to change the folder."
       },
       "filter": {
         "title": "Filter",
@@ -205,8 +205,7 @@
       "invalid_range": "This date is before the start date.",
       "ratings_empty": "Choose at least one rating.",
       "invalid_photo_dir": "Enter the absolute path of an existing folder, for example /config/www/ramka.",
-      "invalid_prefix": "Enter a folder inside the photo folder, without .. parts, or leave it empty.",
-      "sync_running": "A sync is running. Try again when it has finished."
+      "invalid_prefix": "Enter a folder inside the photo folder, without .. parts, or leave it empty."
     },
     "abort": {
       "not_loaded": "DomoSenso Photos is not loaded. Reload the integration and try again.",

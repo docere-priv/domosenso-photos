@@ -88,6 +88,7 @@ class LightroomClient:
         self._transport, self._client_id, self._token = transport, client_id, token
         self._sleep, self._clock, self._base = sleep, clock, base.rstrip('/')
         self._last: float | None = None
+        self.on_page: Callable[[], None] | None = None  # told after every listing page (progress)
 
     async def _throttle(self) -> None:
         if self._last is not None:
@@ -163,6 +164,8 @@ class LightroomClient:
         while True:
             page = await self._json(url, params)
             pages.append(page)
+            if self.on_page:
+                self.on_page()
             href = ((page.get('links') or {}).get('next') or {}).get('href')
             if not href:
                 return pages

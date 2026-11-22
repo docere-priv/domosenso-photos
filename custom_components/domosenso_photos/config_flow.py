@@ -287,11 +287,8 @@ class LightroomOptionsFlow(config_entries.OptionsFlow):
                     'free_floor': int(round(float(user_input['free_floor_gb']) * 1e9))}
                 if path == data['photo_dir'] and prefix == (data.get('prefix') or ''):
                     return self.async_create_entry(data=new_options)
-                if self._syncing():
-                    errors['base'] = 'sync_running'
-                else:
-                    self._folder_change = (path, prefix, new_options)
-                    return await self.async_step_lightroom_folder_confirm()
+                self._folder_change = (path, prefix, new_options)
+                return await self.async_step_lightroom_folder_confirm()
         return self._settings_form(shown, errors)
 
     def _settings_form(self, shown: dict, errors: dict[str, str]):
@@ -306,14 +303,13 @@ class LightroomOptionsFlow(config_entries.OptionsFlow):
                                     data_schema=self.add_suggested_values_to_schema(schema, shown))
 
     async def async_step_lightroom_folder_confirm(self, user_input=None):
-        """Every photo is downloaded again into the new folder; the old one is left as it is."""
+        """Every photo is downloaded again into the new folder; the old one is left as it is.
+
+        A running sync is stopped: the reload cancels it (each photo's record is written with the
+        photo, so nothing is half done), and the new manager syncs into the new folder at once.
+        """
         path, prefix, new_options = self._folder_change
         if user_input is not None:
-            if self._syncing():  # a sync started while the confirmation was open
-                return self._settings_form({
-                    'photo_dir': path, 'prefix': prefix, 'interval_min': new_options['interval_min'],
-                    'max_edge': new_options['max_edge'], 'quality': new_options['quality'],
-                    'free_floor_gb': new_options['free_floor'] / 1e9}, {'base': 'sync_running'})
             # Data and options in one update: the update listener reloads the entry once.
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data={**self.config_entry.data, 'photo_dir': path, 'prefix': prefix},
@@ -323,10 +319,6 @@ class LightroomOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id='lightroom_folder_confirm', data_schema=vol.Schema({}),
                                     description_placeholders={'old': _folder(data['photo_dir'], data.get('prefix')),
                                                               'new': _folder(path, prefix)})
-
-    def _syncing(self) -> bool:
-        manager = self._manager()
-        return manager is not None and manager.lock.locked()
 
     def _album_choices(self, chosen: set[str]) -> list[dict]:
         cached = cached_library(self._manager().data.get('catalog'))

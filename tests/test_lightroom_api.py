@@ -354,3 +354,15 @@ def test_image_any_fullsize_failure_falls_back_to_2048(res):
                             ('GET', rendition_url(2048)): [(200, 'image/jpeg', JPEG)]})
     assert run(client.image('C', 'A', 4000)) == JPEG
     assert fake.calls[-1][1] == rendition_url(2048)
+
+
+def test_on_page_is_called_for_every_listing_page():
+    first = {'base': f'{BASE}/v2/catalogs/C/', 'resources': [{'id': 'a', 'subtype': 'image'}],
+             'links': {'next': {'href': 'assets?page=2'}}}
+    second = {'base': f'{BASE}/v2/catalogs/C/', 'resources': [{'id': 'b', 'subtype': 'image'}]}
+    client, _, _ = make({('GET', f'{BASE}/v2/catalogs/C/assets'): [ok(first)],
+                         ('GET', f'{BASE}/v2/catalogs/C/assets?page=2'): [ok(second)]})
+    pages = []
+    client.on_page = lambda: pages.append(1)
+    run(client.assets('C'))
+    assert len(pages) == 2
