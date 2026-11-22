@@ -249,6 +249,7 @@ class _Exec:
     now: int
     paths: dict[str, str] = field(default_factory=dict)  # plan dict key -> current path
     prefix: str = ''  # emptied folders are pruned up to here, never above
+    moving: set[str] = field(default_factory=set)  # paths of folders this sync moves
     markers: dict[str, dict | None] = field(default_factory=dict)  # plan dict key -> marker read from disk
 
     async def io(self, fn, *args):
@@ -274,28 +275,59 @@ class _Exec:
         marker['path'], marker['last_sync'] = self.paths[dkey], self.now
         write_marker(self.photo_dir / self.paths[dkey], marker)
 
-    def in_album(self, path: str) -> bool:
-        """True when a folder above path holds one of this owner's records: never write inside it."""
-        parent = PurePosixPath(path).parent
-        while str(parent) not in ('.', ''):
-            if _ours(read_marker(self.photo_dir / parent), self.owner):
-                return True
-            parent = parent.parent
-        return False
+    def _holds_record(self, path: str) -> bool:
+        """An album folder (any owner's, any source's record), or a file: neither can be a parent."""
+        return (self.photo_dir / path / MARKER).exists() or (self.photo_dir / path).is_file()
 
-    def rename(self, dkey: str, old: str, wanted: str) -> bool:
-        """Move the folder to its wanted path; False when a folder of ours is in the way (try later)."""
+    def blocker(self, path: str, skip: str | None = None) -> str | None:
+        """The first folder above path that holds a record (an album folder: never a parent)."""
+        parts = PurePosixPath(path).parts
+        for i in range(1, len(parts)):
+            above = '/'.join(parts[:i])
+            if above != skip and self._holds_record(above):
+                return above
+        return None
+
+    def unblocked(self, path: str, skip: str | None = None) -> str:
+        """path with every folder above it that holds a record replaced by its first free suffix
+        (`2023-05` -> `2023-05-2`), so an album folder never lands inside another one."""
+        parts = list(PurePosixPath(path).parts)
+        for i in range(len(parts) - 1):
+            above = '/'.join(parts[:i + 1])
+            if above == skip or not self._holds_record(above):
+                continue
+            base, n = parts[i], 1
+            while True:
+                n += 1
+                parts[i] = f'{base}-{n}'
+                if not self._holds_record('/'.join(parts[:i + 1])):
+                    break
+        return '/'.join(parts)
+
+    def rename(self, dkey: str, old: str, wanted: str, final: bool = False) -> bool:
+        """Move the folder to its wanted path; False when a folder that moves in this sync is in
+        the way (try again once the others moved). A folder in the way that stays gives its name a
+        suffix in the wanted path."""
         if self.paths.get(dkey) != old or not inside(self.photo_dir, wanted) or self.load(dkey) is None:
             return True
         if any(c.is_dir() and not _hidden(c.name) for c in (self.photo_dir / old).iterdir()):
             return True  # a subfolder is not ours (another source's folder, say): never carried along
-        if self.in_album(wanted):
-            return False
+        own = old if wanted.startswith(old + '/') else None  # an album moving into a set of its own name
+        in_the_way = self.blocker(wanted, skip=own)
+        if in_the_way is not None:
+            if not final and in_the_way in self.moving:
+                return False
+            wanted = self.unblocked(wanted, skip=own)
+            if not inside(self.photo_dir, wanted):
+                return True
         new = rename_target(self.photo_dir, old, wanted)
         if new == old:
             return True
+        source = self.photo_dir / old
+        if own is not None:  # into a folder at its own path: step aside under a hidden name first
+            source = source.rename(source.with_name(f'.{source.name}.moving'))
         make_dirs(self.photo_dir, str(PurePosixPath(new).parent))
-        (self.photo_dir / old).rename(self.photo_dir / new)
+        source.rename(self.photo_dir / new)
         self.paths[dkey] = new
         self._write_marker(dkey)  # the marker records where the folder now is
         prune_empty(self.photo_dir, self.prefix, old)
@@ -305,9 +337,10 @@ class _Exec:
         """The folder a placed photo is written to, created when this key has none; None if unsafe."""
         if self.load(p.key) is not None:
             return self.paths[p.key], self.markers[p.key]
-        if not inside(self.photo_dir, p.folder) or self.in_album(p.folder):
+        wanted = self.unblocked(p.folder)
+        if not inside(self.photo_dir, wanted):
             return None
-        path = resolve_path(self.photo_dir, p.folder, self.owner, p.key)
+        path = resolve_path(self.photo_dir, wanted, self.owner, p.key)
         if not inside(self.photo_dir, path):
             return None
         folder = self.photo_dir / path
@@ -364,9 +397,10 @@ async def execute(plan: LrPlan, photo_dir: Path, owner: str, fetch: Callable[[Pl
     run = _Exec(plan, photo_dir, owner, run_blocking, now, {k: f.path for k, f in plan.owned.items()}, prefix=prefix)
     result = RunResult()
     try:
+        run.moving = {old for _, old, _ in plan.rename}
         waiting = [r for r in plan.rename if not await run.io(run.rename, *r)]
-        for r in waiting:  # the folder in the way has usually moved out by now; else the next sync
-            await run.io(run.rename, *r)
+        for r in waiting:  # the folder in the way has moved out by now, or it stays: then a suffix
+            await run.io(run.rename, *r, True)
         writes = ([(p, None, 'added') for p in plan.add] + [(p, None, 'updated') for p in plan.update]
                   + [(p, old, 'moved') for p, old in plan.move])
         total = len(writes) + len(plan.remove)

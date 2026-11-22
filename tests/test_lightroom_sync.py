@@ -651,3 +651,39 @@ def test_ambiguous_nested_copy_is_untouched(tmp_path):
     pl, _ = run(tmp_path, [placed(1, key='k1', folder='E/X')])
     assert pl.rename == [] and pl.ambiguous == [('k1', ['A/X', 'B/X'])]
     assert {n: _tree(tmp_path / n / 'X') for n in ('A', 'B')} == trees
+
+
+def test_album_named_like_its_set_moves_into_it(tmp_path):
+    run(tmp_path, [placed(1, key='k1', folder='Iceland'), placed(2, key='k2', folder='Day')])
+    calls, fetch = _counting()
+    run(tmp_path, [placed(1, key='k1', folder='Iceland/Iceland'), placed(2, key='k2', folder='Iceland/Day')], fetch=fetch)
+    assert _keys(tmp_path) == {'k1': 'Iceland/Iceland', 'k2': 'Iceland/Day'} and calls == []
+
+
+def test_month_folder_in_the_way_gives_the_set_a_suffix(tmp_path):
+    run(tmp_path, [placed(1, key='2023-05', folder='2023-05')])
+    calls, fetch = _counting()
+    run(tmp_path, [placed(1, key='2023-05', folder='2023-05'), placed(2, key='k2', folder='2023-05/Day')], fetch=fetch)
+    assert _keys(tmp_path) == {'2023-05': '2023-05', 'k2': '2023-05-2/Day'} and calls == ['as002']
+    calls.clear()
+    pl, _ = run(tmp_path, [placed(1, key='2023-05', folder='2023-05'), placed(2, key='k2', folder='2023-05/Day')], fetch=fetch)
+    assert calls == [] and _keys(tmp_path) == {'2023-05': '2023-05', 'k2': '2023-05-2/Day'}
+
+
+def test_flat_folder_blocked_by_a_month_folder_moves_beside_it(tmp_path):
+    run(tmp_path, [placed(1, key='2023-05', folder='2023-05'), placed(2, key='k2', folder='Day')])
+    run(tmp_path, [placed(1, key='2023-05', folder='2023-05'), placed(2, key='k2', folder='2023-05/Day')])
+    assert _keys(tmp_path) == {'2023-05': '2023-05', 'k2': '2023-05-2/Day'}
+
+
+def test_another_owners_folder_is_never_a_parent(tmp_path):
+    (tmp_path / 'A').mkdir()
+    (tmp_path / 'A' / '.sync.json').write_text(json.dumps({'owner': 'someone-else', 'key': 'x', 'items': {}}))
+    run(tmp_path, [placed(2, key='k2', folder='A/B')])
+    assert _keys(tmp_path) == {'k2': 'A-2/B'} and [p.name for p in (tmp_path / 'A').iterdir()] == ['.sync.json']
+
+
+def test_a_file_where_a_set_folder_goes_gives_a_suffix(tmp_path):
+    (tmp_path / '2023').write_text('a file, not a folder')
+    run(tmp_path, [placed(1, key='k1', folder='2023/Day')])
+    assert _keys(tmp_path) == {'k1': '2023-2/Day'} and (tmp_path / '2023').read_text() == 'a file, not a folder'
