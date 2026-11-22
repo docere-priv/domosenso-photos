@@ -39,6 +39,8 @@ class LrPlan:
     hold: str | None
     # The folders the plan was made against (one per key), so execute finds a key's path.
     owned: dict[str, OwnedFolder] = field(default_factory=dict)
+    # Keys with more than one candidate folder (key, folder paths): nothing under them is touched.
+    ambiguous: list[tuple[str, list[str]]] = field(default_factory=list)
 
 
 @dataclass
@@ -70,26 +72,26 @@ def _present(folder: Path, items: dict) -> dict[str, dict]:
             if isinstance(v, dict) and _plain(v.get('name')) and (folder / v['name']).is_file()}
 
 
-def _recorded(marker: dict, path: str) -> str:
-    """The folder path the marker was last saved at; a marker without one is where it is."""
-    value = marker.get('path')
-    return value if isinstance(value, str) else path
+class Owned(dict):
+    """read_owned's result: key -> the one folder managed for it, plus the keys left alone this run."""
+
+    def __init__(self, folders=(), ambiguous: list[tuple[str, list[str]]] | None = None):
+        super().__init__(folders)
+        self.ambiguous = ambiguous or []  # (key, folder paths)
 
 
-def read_owned(photo_dir: Path, prefix: str, owner: str,
-               wanted: dict[str, str] | None = None) -> dict[str, OwnedFolder]:
-    """One owned folder per key. wanted: key -> placed folder, if known.
+def read_owned(photo_dir: Path, prefix: str, owner: str) -> Owned:
+    """The folders this owner manages, one per key; no deletion ever depends on guessing a copy.
 
-    Every marker records the path it was saved at. A folder whose marker records another path is a copy
-    when a folder of ours with the same key is at that path: it is left out entirely, so it is never
-    counted, moved from, renamed or emptied. With nothing of ours at the recorded path it is the original,
-    moved, and is adopted (the next save records its new path). Should two folders still share a key,
-    the one at the placement is kept, else the first by path.
+    A folder is self-recorded when its marker records the path it is at (or records none). Per key:
+    exactly one self-recorded folder is managed and every other folder of the key is left out (copies);
+    no self-recorded folder and a single candidate is the original moved by the user, adopted (the next
+    save records its path); anything else makes the key ambiguous: none of its folders is touched.
     """
     base = photo_dir / prefix if prefix else photo_dir
-    groups: dict[str, list[OwnedFolder]] = {}
+    groups: dict[str, list[tuple[OwnedFolder, bool]]] = {}
     if not base.is_dir():
-        return {}
+        return Owned()
     for child in sorted(base.iterdir(), key=lambda c: c.name):
         path = f'{prefix}/{child.name}' if prefix else child.name
         if not child.is_dir() or not inside(photo_dir, path):
@@ -97,22 +99,32 @@ def read_owned(photo_dir: Path, prefix: str, owner: str,
         marker = read_marker(child)
         if not _ours(marker, owner):
             continue
-        recorded = _recorded(marker, path)
-        if (recorded != path and inside(photo_dir, recorded)
-                and _ours(read_marker(photo_dir / recorded), owner, marker['key'])):
-            continue  # a copy of the folder at the recorded path
+        recorded = marker.get('path')
         folder = OwnedFolder(marker['key'], path, _present(child, marker['items']))
-        groups.setdefault(folder.key, []).append(folder)
-    want = wanted or {}
-    return {key: next((f for f in group if f.path == want.get(key)), group[0]) for key, group in groups.items()}
+        groups.setdefault(folder.key, []).append((folder, not isinstance(recorded, str) or recorded == path))
+    out, ambiguous = {}, []
+    for key, group in groups.items():
+        selves = [f for f, self_recorded in group if self_recorded]
+        if len(selves) == 1:
+            out[key] = selves[0]
+        elif not selves and len(group) == 1:
+            out[key] = group[0][0]
+        else:
+            ambiguous.append((key, [f.path for f, _ in group]))
+    return Owned(out, ambiguous)
 
 
 def plan(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int, confirm: bool) -> LrPlan:
+    ambiguous = list(getattr(owned, 'ambiguous', []))
+    left_alone = {key for key, _ in ambiguous}
     wanted: dict[str, Placed] = {}
     for p in placed:
         wanted.setdefault(p.photo.asset_id, p)
+    # A photo placed under an ambiguous key is neither written nor removed from where it is now.
+    held = {asset for asset, p in wanted.items() if p.key in left_alone}
+    wanted = {asset: p for asset, p in wanted.items() if asset not in held}
     folder_for = {p.key: p.folder for p in wanted.values()}
-    kept = folders = {f.key: f for f in owned.values()}  # read_owned already keeps one folder per key
+    kept = folders = {f.key: f for f in owned.values() if f.key not in left_alone}  # one per key
 
     where: dict[str, list[str]] = {}  # asset id -> keys of kept folders holding it
     for key in sorted(kept):
@@ -132,7 +144,7 @@ def plan(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int
             stale += [(k, asset) for k in holders[1:]]
         else:
             add.append(p)
-    gone = [asset for asset in where if asset not in wanted]
+    gone = [asset for asset in where if asset not in wanted and asset not in held]
     for asset in gone:
         remove.append((where[asset][0], asset))
         stale += [(k, asset) for k in where[asset][1:]]
@@ -154,7 +166,7 @@ def plan(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int
         hold = None
     if hold:
         move, remove, stale = [], [], []
-    return LrPlan(add, update, move, remove + stale, rename, hold, folders)
+    return LrPlan(add, update, move, remove + stale, rename, hold, folders, ambiguous)
 
 
 @dataclass
@@ -211,10 +223,10 @@ class _Exec:
         if not inside(self.photo_dir, path):
             return None
         folder = self.photo_dir / path
-        found = read_marker(folder)
+        if _ours(read_marker(folder), self.owner, p.key):
+            return None  # a folder of this key the plan did not choose (a copy): never written into
         make_dirs(self.photo_dir, path)
-        items = _present(folder, found['items']) if _ours(found, self.owner, p.key) else {}
-        self.paths[p.key], self.markers[p.key] = path, self._fresh(p.key, items)
+        self.paths[p.key], self.markers[p.key] = path, self._fresh(p.key, {})
         self._write_marker(p.key)  # mark the folder ours before the first file lands
         return path, self.markers[p.key]
 

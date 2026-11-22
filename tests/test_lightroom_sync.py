@@ -68,7 +68,7 @@ def execute(pl, photo_dir, fetch=_fetch, free_floor=0):
 
 
 def run(photo_dir, placed_list, prefix='', listed=None, confirm=False, **kw):
-    folders = lrs.read_owned(photo_dir, prefix, OWNER, {p.key: p.folder for p in placed_list})
+    folders = lrs.read_owned(photo_dir, prefix, OWNER)
     pl = lrs.plan(placed_list, folders, len(placed_list) if listed is None else listed, confirm)
     return pl, execute(pl, photo_dir, **kw)
 
@@ -170,7 +170,7 @@ def test_read_owned_same_key_copy_is_left_alone(tmp_path):
     for f in (tmp_path / 'Trip').iterdir():
         (tmp_path / 'Copy' / f.name).write_bytes(f.read_bytes())
     before = {f.name: f.read_bytes() for f in (tmp_path / 'Copy').iterdir()}
-    folders = lrs.read_owned(tmp_path, '', OWNER, {'alb1': 'Trip'})
+    folders = lrs.read_owned(tmp_path, '', OWNER)
     assert folders == {'alb1': lrs.OwnedFolder('alb1', 'Trip', marker(tmp_path / 'Trip')['items'])}
     # a move out of the album, a removal, an add and an update: the copy is never touched
     run(tmp_path, [placed(1, key='alb2', folder='Beach'), placed(3)])
@@ -219,12 +219,60 @@ def test_execute_enospc_on_write_is_disk_full(tmp_path, monkeypatch):
         run(tmp_path, [placed(1)])
 
 
-def test_read_owned_same_key_keeps_the_placed_one(tmp_path):
+def test_two_self_recorded_folders_are_ambiguous(tmp_path):
+    for name in ('A', 'B'):  # older markers without a path: both count as self-recorded
+        (tmp_path / name).mkdir()
+        (tmp_path / name / '.sync.json').write_text(json.dumps({'owner': OWNER, 'key': 'alb1', 'items': {}}))
+    folders = lrs.read_owned(tmp_path, '', OWNER)
+    assert folders == {} and folders.ambiguous == [('alb1', ['A', 'B'])]
+
+
+def _tree(folder):
+    return {f.name: f.read_bytes() for f in folder.iterdir()}
+
+
+def test_copy_survives_two_album_renames(tmp_path):
+    run(tmp_path, [placed(1), placed(2)])
+    before = _copy(tmp_path / 'Trip', tmp_path / 'Copy')
+    run(tmp_path, [placed(1, folder='Zebra'), placed(2, folder='Zebra')])  # first rename
+    assert photos(tmp_path / 'Zebra') == ['2025-06-02_as001.jpg', '2025-06-03_as002.jpg']
+    # the copy still records 'Trip' and nothing of ours is there now; Zebra records itself
+    assert {k: f.path for k, f in lrs.read_owned(tmp_path, '', OWNER).items()} == {'alb1': 'Zebra'}
+    pl, _ = run(tmp_path, [placed(1, folder='Apple')])  # second rename; 'Apple' < 'Copy' < 'Zebra'
+    assert pl.rename == [('alb1', 'Zebra', 'Apple')] and pl.remove == [('alb1', 'as002')]
+    assert photos(tmp_path / 'Apple') == ['2025-06-02_as001.jpg'] and not (tmp_path / 'Zebra').exists()
+    assert _tree(tmp_path / 'Copy') == before
+    assert {k: f.path for k, f in lrs.read_owned(tmp_path, '', OWNER).items()} == {'alb1': 'Apple'}
+
+
+def test_moved_and_copied_folder_is_ambiguous_and_untouched(tmp_path):
+    run(tmp_path, [placed(1), placed(2)])
+    (tmp_path / 'Trip').rename(tmp_path / 'Moved')
+    _copy(tmp_path / 'Moved', tmp_path / 'Copy')
+    trees = {n: _tree(tmp_path / n) for n in ('Moved', 'Copy')}
+    folders = lrs.read_owned(tmp_path, '', OWNER)
+    assert folders == {} and folders.ambiguous == [('alb1', ['Copy', 'Moved'])]
+    pl, res = run(tmp_path, [placed(1, folder='Coast'), placed(3)], listed=5)
+    assert pl.ambiguous == [('alb1', ['Copy', 'Moved'])]
+    assert pl.add == pl.update == pl.move == pl.remove == pl.rename == [] and pl.hold is None
+    assert (res.added, res.updated, res.moved, res.removed) == (0, 0, 0, 0)
+    assert {n: _tree(tmp_path / n) for n in ('Moved', 'Copy')} == trees
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['Copy', 'Moved']
+    _, res = run(tmp_path, [], listed=0)  # not even an empty library touches them
+    assert {n: _tree(tmp_path / n) for n in ('Moved', 'Copy')} == trees
+
+
+def test_ambiguous_key_photos_not_added_elsewhere(tmp_path):
+    run(tmp_path, [placed(1, key='alb2', folder='Beach')])
     for name in ('A', 'B'):
         (tmp_path / name).mkdir()
         (tmp_path / name / '.sync.json').write_text(json.dumps({'owner': OWNER, 'key': 'alb1', 'items': {}}))
-    assert lrs.read_owned(tmp_path, '', OWNER)['alb1'].path == 'A'
-    assert lrs.read_owned(tmp_path, '', OWNER, {'alb1': 'B'}) == {'alb1': lrs.OwnedFolder('alb1', 'B', {})}
+    beach = _tree(tmp_path / 'Beach')
+    # as001 now belongs to the ambiguous album, as005 is new in it: neither moves, is removed or added
+    pl, res = run(tmp_path, [placed(1, folder='Trip'), placed(5, folder='Trip')])
+    assert pl.add == pl.move == pl.remove == [] and res.added == res.moved == res.removed == 0
+    assert _tree(tmp_path / 'Beach') == beach
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['A', 'B', 'Beach']
 
 
 def test_plan_album_rename_renames_folder():
