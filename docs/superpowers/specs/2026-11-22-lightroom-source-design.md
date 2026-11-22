@@ -272,7 +272,7 @@ its counts, and where the shared marker code is factored.
 
 ## Open before building
 
-These were checked first, on a real account. Each item below was checked on 2026-11-22; the
+These were checked first, on a real account. Items 1 and 3–5 were checked on 2026-11-22 (item 2 is still open); the
 results are in `docs/lightroom-api.md` (Decision record), which is the authority:
 
 1. Adobe accepts `https://my.home-assistant.io/redirect/oauth` as a redirect for the Web App. If
