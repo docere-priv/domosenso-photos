@@ -213,7 +213,8 @@ change raises it.
 | `await api.sync(album_id)` | Returns at once; the sync runs in the background. |
 
 Failures raise `AlbumError` with `.code` one of `invalid_link`, `already_added`, `wrong_password`,
-`unreachable` (`check`, `add`) or `unknown_album` (`remove`, `sync`). The password is never
+`unreachable` (`check`, `add`), `unknown_album` (`remove`, `sync`) or `photos_unavailable` (all
+four, while the entry unloads; nothing is changed then). The password is never
 part of a URL, an error text or a returned value; a caller must not log it either.
 
 ## Sensor

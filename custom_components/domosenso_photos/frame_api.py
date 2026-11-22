@@ -23,9 +23,15 @@ class FrameApi:
     def albums(self) -> list[dict]:
         return self._manager.public_list()
 
+    def _open(self):
+        """The manager; AlbumError('photos_unavailable') while the integration unloads (nothing is saved then)."""
+        if self._manager.closing:
+            raise AlbumError('photos_unavailable')
+        return self._manager
+
     async def check(self, url: str, password: str | None) -> str:
         """The album name when the link opens with this password; AlbumError(code) otherwise."""
-        m = self._manager
+        m = self._open()
         try:
             link = parse_share_url(str(url).strip())
         except ValueError:
@@ -44,17 +50,19 @@ class FrameApi:
 
     async def add(self, url: str, password: str | None) -> dict:
         """Save the album and start its first sync in the background."""
-        rec = await self._manager.add_background(url, password or None)
+        rec = await self._open().add_background(url, password or None)
         return {'id': rec['id'], 'name': rec.get('name')}
 
     async def remove(self, album_id: str) -> str:
-        if album_id not in self._manager.albums:
+        m = self._open()
+        if album_id not in m.albums:
             raise AlbumError('unknown_album')
-        return 'removed' if await self._manager.remove(album_id) is None else 'busy'
+        return 'removed' if await m.remove(album_id) is None else 'busy'
 
     async def sync(self, album_id: str) -> None:
-        if album_id not in self._manager.albums:
+        m = self._open()
+        if album_id not in m.albums:
             raise AlbumError('unknown_album')
-        task = asyncio.get_running_loop().create_task(self._manager._sync_one(album_id))
+        task = asyncio.get_running_loop().create_task(m._sync_one(album_id))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)

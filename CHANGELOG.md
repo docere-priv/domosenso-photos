@@ -4,7 +4,9 @@
 
 - Add `AlbumsManager.frame_api`, a versioned in-process facade (`albums`, `check`, `add`,
   `remove`, `sync`) for the paired Frame device. Services, options and sync behaviour are
-  unchanged.
+  unchanged. While the entry unloads, its `check`, `add`, `remove` and `sync` raise
+  `photos_unavailable` and change nothing.
+- The share client's User-Agent is `domosenso-photos/0.2.0`.
 
 ## 0.1.2 — 2026-11-21
 

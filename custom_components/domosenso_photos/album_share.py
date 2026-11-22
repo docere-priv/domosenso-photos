@@ -47,7 +47,7 @@ def api_base(link: ShareLink, host_map: list[dict[str, str]]) -> str:
     return link.base
 
 
-USER_AGENT = 'domosenso-photos/0.1.2'
+USER_AGENT = 'domosenso-photos/0.2.0'
 PAGE_SIZE = 500
 MAX_BODY = 200_000_000  # larger responses are refused by the transport
 Transport = Callable[..., Awaitable[tuple[int, str, bytes]]]

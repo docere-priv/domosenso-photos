@@ -43,6 +43,7 @@ class FakeManager:
         self._transport = transport
         self.added, self.removed, self.synced = [], [], []
         self.remove_result = None
+        self.closing = False
 
     def public_list(self):
         return [{'id': rid, 'name': rec.get('name'), 'status': rec.get('status')} for rid, rec in self.albums.items()]
@@ -175,3 +176,16 @@ def test_sync_starts_in_background_and_unknown():
             await api.sync('nope')
         return info.value.code
     assert run(go()) == 'unknown_album'
+
+
+def test_closing_manager_refuses_every_change():
+    m = FakeManager(FakeTransport(LOGIN_OK, ALBUM_OK))
+    m.albums['a1'] = {'id': 'a1', 'url': 'https://photos.example.org/mo/sharing/Other1'}
+    m.closing = True
+    api = frame_api.FrameApi(m)
+    for call in (api.check(URL, PASSWORD), api.add(URL, PASSWORD), api.remove('a1'), api.sync('a1')):
+        with pytest.raises(AlbumError) as info:
+            run(call)
+        assert info.value.code == 'photos_unavailable'
+    assert m.added == [] and m.removed == [] and m.synced == []
+    assert m._transport.calls == []
