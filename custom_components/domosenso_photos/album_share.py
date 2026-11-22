@@ -33,6 +33,13 @@ def parse_share_url(url: str) -> ShareLink:
     return ShareLink(origin, origin + prefix, passphrase)
 
 
+def same_link(url: str, link: ShareLink) -> bool:
+    try:
+        return parse_share_url(url) == link
+    except ValueError:
+        return False
+
+
 def api_base(link: ShareLink, host_map: list[dict[str, str]]) -> str:
     for entry in host_map:
         if entry.get('from') == link.origin:

@@ -12,6 +12,14 @@ VERSION_TRACKS_CONTENT = True
 PHOTO_TYPES = ('photo', 'live')
 
 
+class AlbumError(ValueError):
+    """A request the integration refuses; `code` is a translation key."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
 class IncompleteListing(Exception):
     """The remote listing does not match the reported item count."""
 
