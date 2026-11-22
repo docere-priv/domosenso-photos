@@ -615,6 +615,9 @@ async def main():
         await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
         check('signin_expiring' in issues(), f'signin issue {issues()}')
+        check(entry.runtime_data.data.get('status') == 'error' and entry.runtime_data.data.get('last_success')
+              and hass.states.get(progress_sensor).state == 'unknown',
+              f'progress after a reload following a failed run {hass.states.get(progress_sensor)}')
         hass.config_entries.async_update_entry(entry, data={**entry.data, 'token': token})
         await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()

@@ -108,7 +108,7 @@ class LightroomManager:
 
     async def async_load(self) -> None:
         self.data = await self.store.async_load() or {}
-        self._last_run_complete = bool(self.data.get('last_success'))
+        self._last_run_complete = self.data.get('status') == 'ok'  # as before the restart
 
     def start(self) -> None:
         self._issues()
