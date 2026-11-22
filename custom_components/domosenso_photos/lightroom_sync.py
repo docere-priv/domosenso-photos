@@ -75,10 +75,11 @@ def read_owned(photo_dir: Path, prefix: str, owner: str,
 
     A second folder with the same key can only be a copy the user made: it is left out, so it is never
     counted, moved from, renamed or emptied. The one kept is at the placement (or its -N suffix), else
+    the one whose marker was written last (only the managed folder's marker is rewritten each run), else
     the first by path.
     """
     base = photo_dir / prefix if prefix else photo_dir
-    groups: dict[str, list[OwnedFolder]] = {}
+    groups: dict[str, list[tuple[OwnedFolder, int]]] = {}  # key -> (folder, marker last_sync), by path
     if not base.is_dir():
         return {}
     for child in sorted(base.iterdir(), key=lambda c: c.name):
@@ -89,13 +90,16 @@ def read_owned(photo_dir: Path, prefix: str, owner: str,
         if not _ours(marker, owner):
             continue
         folder = OwnedFolder(marker['key'], path, _present(child, marker['items']))
-        groups.setdefault(folder.key, []).append(folder)
+        last = marker.get('last_sync')
+        groups.setdefault(folder.key, []).append((folder, last if type(last) is int else -1))
     want = wanted or {}
     out = {}
     for key, group in groups.items():
         w = want.get(key)
-        out[key] = (next((f for f in group if f.path == w), None)
-                    or next((f for f in group if w is not None and _in_place(f.path, w)), None) or group[0])
+        folders = [f for f, _ in group]
+        latest = max(group, key=lambda g: g[1])[0]  # max keeps the first by path on a tie
+        out[key] = (next((f for f in folders if f.path == w), None)
+                    or next((f for f in folders if w is not None and _in_place(f.path, w)), None) or latest)
     return out
 
 

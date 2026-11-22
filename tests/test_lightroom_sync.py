@@ -178,6 +178,21 @@ def test_read_owned_same_key_copy_is_left_alone(tmp_path):
     assert {f.name: f.read_bytes() for f in (tmp_path / 'Copy').iterdir()} == before
 
 
+def test_read_owned_same_key_rename_keeps_most_recent_marker(tmp_path):
+    run(tmp_path, [placed(1), placed(2)])
+    (tmp_path / 'Copy').mkdir()
+    for f in (tmp_path / 'Trip').iterdir():
+        (tmp_path / 'Copy' / f.name).write_bytes(f.read_bytes())
+    m = marker(tmp_path / 'Copy')
+    m['last_sync'] = NOW - 100  # the copy's marker stops being rewritten once it is made
+    (tmp_path / 'Copy/.sync.json').write_text(json.dumps(m))
+    before = {f.name: f.read_bytes() for f in (tmp_path / 'Copy').iterdir()}
+    pl, _ = run(tmp_path, [placed(1, folder='Coast')])  # album renamed; 'Copy' sorts before 'Trip'
+    assert pl.rename == [('alb1', 'Trip', 'Coast')]
+    assert photos(tmp_path / 'Coast') == ['2025-06-02_as001.jpg'] and not (tmp_path / 'Trip').exists()
+    assert {f.name: f.read_bytes() for f in (tmp_path / 'Copy').iterdir()} == before
+
+
 def test_read_owned_same_key_keeps_the_placed_one(tmp_path):
     for name in ('A', 'B'):
         (tmp_path / name).mkdir()
