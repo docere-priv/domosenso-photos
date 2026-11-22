@@ -196,3 +196,19 @@ def test_normalize_add_exif_gps_still_removed():
         ex.get_ifd(0x8825)[1] = 'N'
     out = album_image.normalize(_jpeg((400, 300)), 200, 85, add)
     assert not Image.open(io.BytesIO(out)).getexif().get_ifd(0x8825)
+
+
+@pytest.mark.parametrize('mode', ['L', 'CMYK'])
+def test_normalize_drops_icc_of_converted_source(mode):
+    icc = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
+    buf = io.BytesIO()
+    Image.new(mode, (400, 300)).save(buf, format='JPEG', icc_profile=icc)
+    out = album_image.normalize(buf.getvalue(), 200, 85)
+    assert 'icc_profile' not in Image.open(io.BytesIO(out)).info
+
+
+def test_normalize_icc_survives_orientation():
+    icc = ImageCms.ImageCmsProfile(ImageCms.createProfile('sRGB')).tobytes()
+    out = Image.open(io.BytesIO(album_image.normalize(
+        _jpeg((300, 200), orientation=6, icc=icc), 2560, 85)))
+    assert out.size == (200, 300) and out.info.get('icc_profile') == icc

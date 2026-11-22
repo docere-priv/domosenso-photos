@@ -45,7 +45,8 @@ def normalize(data: bytes, max_edge: int, quality: int,
         exif = src.getexif()
         if add_exif is not None:
             add_exif(exif)  # before the orientation reset and the GPS removal
-        icc = src.info.get('icc_profile')
+        # a profile describes the source's colour space: only an RGB source keeps it
+        icc = src.info.get('icc_profile') if src.mode == 'RGB' else None
         if src.format == 'JPEG':
             src.draft('RGB', (max_edge, max_edge))  # decode at a reduced scale: tablet memory
         img = src if src.mode == 'RGB' else src.convert('RGB')
