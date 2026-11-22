@@ -245,7 +245,7 @@ class LightroomManager:
                 return None
             try:
                 return await self.hass.async_add_executor_job(
-                    album_image.normalize, raw, self.max_edge, self.quality, exif_adder(p.photo))
+                    album_image.normalize, raw, self.max_edge, self.quality, exif_adder(p.photo), False)
             except _BAD_IMAGE:
                 return None
 

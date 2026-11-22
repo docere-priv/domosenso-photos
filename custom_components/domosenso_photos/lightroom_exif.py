@@ -1,4 +1,4 @@
-"""EXIF tags built from Lightroom metadata (renditions carry none). No Home Assistant imports."""
+"""EXIF tags built from Lightroom metadata; normalize writes only these (the rendition's own EXIF is dropped)."""
 from __future__ import annotations
 
 from collections.abc import Callable

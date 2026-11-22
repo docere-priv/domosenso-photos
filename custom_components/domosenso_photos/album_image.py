@@ -38,11 +38,17 @@ def _register_heif() -> None:
 
 
 def normalize(data: bytes, max_edge: int, quality: int,
-              add_exif: Callable[[Image.Exif], None] | None = None) -> bytes:
+              add_exif: Callable[[Image.Exif], None] | None = None, keep_source_exif: bool = True) -> bytes:
+    """keep_source_exif=False starts from an EXIF holding only the source's orientation, so nothing but
+    add_exif's tags is written (a rendition may carry the original's serial numbers and MakerNote)."""
     if is_heif(data):
         _register_heif()
     with Image.open(io.BytesIO(data)) as src:
         exif = src.getexif()
+        if not keep_source_exif:
+            orientation, exif = exif.get(ORIENTATION), Image.Exif()
+            if orientation is not None:
+                exif[ORIENTATION] = orientation
         if add_exif is not None:
             add_exif(exif)  # before the orientation reset and the GPS removal
         # a profile describes the source's colour space: only an RGB source keeps it
