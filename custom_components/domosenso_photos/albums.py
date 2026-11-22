@@ -25,8 +25,9 @@ from homeassistant.requirements import async_process_requirements
 from homeassistant.util import dt as dt_util
 
 from .album_layout import sanitize_name
-from .album_share import MAX_BODY, ShareClient, Unreachable, api_base, parse_share_url
+from .album_share import ShareClient, api_base, parse_share_url
 from .album_sync import AlbumRecord, SyncOptions, remove_album, sync_album
+from .transport import make_transport
 
 _LOGGER = logging.getLogger(__name__)
 DOMAIN = 'domosenso_photos'
@@ -37,8 +38,6 @@ PLATFORMS = ['sensor']
 SERVICES = ('album_add', 'album_remove', 'album_sync')
 DEFAULT_PHOTO_DIR = '/config/www/ramka'
 DEFAULTS = {'interval_min': 60, 'max_edge': 2560, 'quality': 85, 'free_floor': 1_000_000_000, 'host_map': []}
-REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=900, sock_connect=30, sock_read=60)
-CHUNK = 1 << 20
 # Installed at entry setup, not from the manifest: a missing wheel or no network must not fail the
 # entry. Until it is importable, HEIC items use the share's thumbnail.
 HEIF_REQUIREMENT = 'pillow-heif==1.8.1'
@@ -115,6 +114,7 @@ class AlbumsManager:
         # Own session without a cookie jar: the client sends sharing_sid itself, and a shared jar
         # would mix sessions of albums on the same host.
         self.session = async_create_clientsession(hass, cookie_jar=aiohttp.DummyCookieJar())
+        self.transport = make_transport(self.session)
         self.closing = False
         self._unsubs: list = []
         self._task: asyncio.Task | None = None
@@ -214,22 +214,6 @@ class AlbumsManager:
     def _run_blocking(self, fn):
         return self.hass.async_add_executor_job(fn)
 
-    async def _transport(self, method, url, params=None, data=None, headers=None):
-        """Redirects are not followed (the client reports them); bodies over MAX_BODY are refused."""
-        try:
-            async with self.session.request(method, url, params=params, data=data, headers=headers,
-                                            timeout=REQUEST_TIMEOUT, allow_redirects=False) as resp:
-                if (resp.content_length or 0) > MAX_BODY:
-                    raise Unreachable('Response too large', 'too_large')
-                body = bytearray()
-                async for chunk in resp.content.iter_chunked(CHUNK):
-                    body += chunk
-                    if len(body) > MAX_BODY:
-                        raise Unreachable('Response too large', 'too_large')
-                return resp.status, resp.headers.get('Content-Type', ''), bytes(body)
-        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-            raise OSError(type(err).__name__) from err  # the client maps OSError to Unreachable
-
     async def _sync_one(self, album_id: str, confirm: bool = False) -> AlbumRecord | None:
         """Every sync runs as a tracked task, so unload can cancel it."""
         rec = self.albums.get(album_id)
@@ -263,7 +247,7 @@ class AlbumsManager:
             return None
         try:
             link = parse_share_url(rec['url'])
-            client = ShareClient(self._transport, api_base(link, self.host_map), link.passphrase,
+            client = ShareClient(self.transport, api_base(link, self.host_map), link.passphrase,
                                  rec.get('password'))
             result = await sync_album(rec, client, self.photo_dir, self.options, dt_util.get_default_time_zone(),
                                       int(time.time()), self._run_blocking, confirm)
