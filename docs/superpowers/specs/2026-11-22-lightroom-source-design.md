@@ -168,6 +168,9 @@ All set conditions must hold (AND). Empty means "no condition".
 
 ### Folders and files
 
+> Amended 2026-11-22: albums land at their path in the album tree, see
+> `2026-11-22-lightroom-album-tree-design.md`.
+
 - Folder: `<prefix>/<album name>`; photos in no album: `<prefix>/<YYYY-MM>` of the capture date.
   `prefix` is set at setup with `photo_dir`, default empty (folders directly in `photo_dir`), and
   is not changed afterwards: changing it would move every photo. *(Builder-check call.)*

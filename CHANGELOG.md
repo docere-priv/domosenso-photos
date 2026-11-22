@@ -12,6 +12,8 @@
   `phase`, `done`, `total` and `progress` in %).
 - Lightroom: the photo folder and subfolder can be changed in Settings, also during a sync (which
   stops); the photos are downloaded again into the new folder and the old folder is left as it is.
+- Lightroom: albums land at their path in the album tree (`<set>/<album>`); folders from the flat
+  layout move there without a download, and set folders a move empties are removed.
 - Photos keep their colour profile (ICC); wide-gamut photos, such as iPhone originals, no longer shift in colour.
 
 ## 0.2.0 — 2026-11-22

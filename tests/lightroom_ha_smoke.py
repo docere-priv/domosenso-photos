@@ -41,6 +41,8 @@ JSON_PREFIX = 'while (1) {}\n'
 EXIF_IFD, GPS_IFD = 0x8769, 0x8825
 SET, LAKE, PEAKS, GARDEN = 'set-faraway', 'alb-zebra', 'alb-quartz', 'alb-mossy'
 NAMES = {SET: 'Faraway Trips', LAKE: 'Zebra Lake', PEAKS: 'Quartz Peaks', GARDEN: 'Mossy Garden'}
+# Where each album lands: its path in the album tree (two albums inside the set).
+DIR = {LAKE: f'{NAMES[SET]}/{NAMES[LAKE]}', PEAKS: f'{NAMES[SET]}/{NAMES[PEAKS]}', GARDEN: NAMES[GARDEN]}
 PAGE = 20  # the fake's page size: the asset list comes in two pages
 SHARE_PASS = 'SmokeShare9'
 
@@ -216,7 +218,7 @@ def wanted(assets, members, ratings=(3, 4, 5), edited_only=False, exclude=(), co
         if alb in exclude:
             continue
         if alb:
-            folder = f'lr/{NAMES[alb]}' + ('-2' if alb in collided else '')
+            folder = f'lr/{DIR[alb]}' + ('-2' if alb in collided else '')
         else:
             folder = 'lr/' + p['captureDate'][:7]
         out.setdefault(folder, set()).add(f"{p['captureDate'][:10]}_{a['id']}.jpg")
@@ -227,9 +229,10 @@ def files(root, prefix='lr'):
     """folder -> photo file names, for the folders that carry a sync marker."""
     base = Path(root, prefix)
     out = {}
-    for marker in sorted(base.glob('*/.sync.json')):
+    for marker in sorted(base.rglob('.sync.json')):
         names = {p.name for p in marker.parent.iterdir() if p.name != '.sync.json'}
-        out[f'{prefix}/{marker.parent.name}'] = names
+        rel = marker.parent.relative_to(base).as_posix()
+        out[f'{prefix}/{rel}' if prefix else rel] = names
     return out
 
 
@@ -288,7 +291,7 @@ async def main():
         flows = hass.config_entries.flow
 
         photo_dir = Path(config_dir, 'www', 'ramka')
-        foreign = photo_dir / 'lr' / NAMES[PEAKS]  # someone else's folder: the album lands at "-2"
+        foreign = photo_dir / 'lr' / DIR[PEAKS]  # someone else's folder: the album lands at "-2"
         foreign.mkdir(parents=True)
         (foreign / 'notes.txt').write_text('not ours')
         foreign_before = tree(foreign)
@@ -419,11 +422,11 @@ async def main():
         count = sum(map(len, expected.values()))
         check(count == 23 and lib['status'] == 'ok' and lib['added'] == count and lib['skipped_count'] == 0, f'first sync {lib}')
         check(files(photo_dir) == expected, f'files {files(photo_dir)} != {expected}')
-        check(set(expected) == {f'lr/{NAMES[LAKE]}', f'lr/{NAMES[PEAKS]}-2', f'lr/{NAMES[GARDEN]}', 'lr/2025-07', 'lr/2024-12'},
+        check(set(expected) == {f'lr/{DIR[LAKE]}', f'lr/{DIR[PEAKS]}-2', f'lr/{DIR[GARDEN]}', 'lr/2025-07', 'lr/2024-12'},
               f'folders {set(expected)}')
         check(tree(foreign) == foreign_before, 'the foreign folder was touched')
         by_id = {a['id']: a for a in fake.assets}
-        album_key = {f'lr/{NAMES[LAKE]}': LAKE, f'lr/{NAMES[PEAKS]}-2': PEAKS, f'lr/{NAMES[GARDEN]}': GARDEN}
+        album_key = {f'lr/{DIR[LAKE]}': LAKE, f'lr/{DIR[PEAKS]}-2': PEAKS, f'lr/{DIR[GARDEN]}': GARDEN}
         for path, names in expected.items():
             marker = json.loads((photo_dir / path / '.sync.json').read_text())
             check(marker['owner'] == owner('acct-one') and marker['kind'] == 'lightroom' and marker['path'] == path
@@ -445,7 +448,7 @@ async def main():
         await hass.async_block_till_done()
         state = hass.states.get('sensor.domosenso_photos_lightroom')
         check(state is not None and state.state == 'ok' and state.attributes['photos'] == count, f'sensor {state}')
-        check(state.attributes['path_collisions'] == [f'lr/{NAMES[PEAKS]}-2'] and state.attributes['ambiguous_folders'] == [],
+        check(state.attributes['path_collisions'] == [f'lr/{DIR[PEAKS]}-2'] and state.attributes['ambiguous_folders'] == [],
               f'sensor attributes {state.attributes}')
         check(issues()['path_collision'].translation_placeholders == {
             'title': 'Lightroom', 'count': '1', 'entity': 'sensor.domosenso_photos_lightroom'}, f'collision issue {issues()}')
@@ -477,7 +480,7 @@ async def main():
         check(r['type'] == 'menu' and r['step_id'] == 'filter_preview', f'filter preview {r}')
         ph = r['description_placeholders']
         check(ph['kept'] == str(keep) and ph['add'] == '0' and ph['remove'] == str(count - keep) and ph['move'] == '0'
-              and ph['hold'] == '-' and f'lr/{NAMES[GARDEN]}' in ph['top'], f'preview placeholders {ph}')
+              and ph['hold'] == '-' and f'lr/{DIR[GARDEN]}' in ph['top'], f'preview placeholders {ph}')
         old = entry.runtime_data
         r = await hass.config_entries.options.async_configure(r['flow_id'], {'next_step_id': 'save'})
         check(r['type'] == 'create_entry' and entry.options['edited_only'] and entry.options['albums_exclude'] == [GARDEN], f'save {r}')
@@ -516,7 +519,7 @@ async def main():
         check(lib['status'] == 'ok' and lib['updated'] == 1 and lib['added'] == 0 and fake.fetched() == ['as03'], f'edit {lib} {fake.renditions}')
         after = photo_bytes(photo_dir)
         changed = sorted(k for k in after if after[k] != before.get(k))
-        check(changed == [f'lr/{NAMES[LAKE]}/2025-06-04_as03.jpg'] and after.keys() == before.keys(), f'edit changed {changed}')
+        check(changed == [f'lr/{DIR[LAKE]}/2025-06-04_as03.jpg'] and after.keys() == before.keys(), f'edit changed {changed}')
 
         # --- A rendition that answers 404 is skipped; the sync is still ok.
         fake.assets.append(make_asset(30))
@@ -533,7 +536,7 @@ async def main():
         check(lib['status'] == 'ok' and lib['skipped_count'] == 0 and files(photo_dir) == expected, f'after 404 {lib}')
 
         # --- A copied album folder after the original was moved: ambiguous, both left byte-identical.
-        lake = photo_dir / 'lr' / NAMES[LAKE]
+        lake = photo_dir / 'lr' / DIR[LAKE]
         moved, copy = photo_dir / 'lr' / 'Moved Lake', photo_dir / 'lr' / 'Copied Lake'
         lake.rename(moved)
         shutil.copytree(moved, copy)
@@ -567,6 +570,22 @@ async def main():
         check(reading and reading[-1]['done'] == pages_before and reading[-1]['total'] == pages_before
               and reading[-1]['progress'] == 99 and any(0 < a['progress'] < 99 for a in reading if a['progress'] is not None),
               f'reading progress {[(a["done"], a["total"], a["progress"]) for a in reading]}')
+
+        # --- A set renamed in Lightroom: its albums' folders move, nothing is downloaded; the old set
+        # folder stays while it holds someone else's folder.
+        fake.albums[0]['payload']['name'] = 'Far Trips'
+        fake.renditions.clear()
+        lib = (await call('lightroom_sync', entry_id=entry.entry_id))['libraries'][0]
+        renamed = {k.replace(f'lr/{NAMES[SET]}/', 'lr/Far Trips/').replace(f'{NAMES[PEAKS]}-2', NAMES[PEAKS]): v
+                   for k, v in expected.items()}
+        check(lib['status'] == 'ok' and lib['added'] == 0 and not fake.fetched() and files(photo_dir) == renamed,
+              f'set rename {lib} {files(photo_dir)}')
+        check(tree(foreign) == foreign_before and sorted(p.name for p in (photo_dir / 'lr' / NAMES[SET]).iterdir()) == [NAMES[PEAKS]],
+              'the old set folder lost its foreign content or kept ours')
+        fake.albums[0]['payload']['name'] = NAMES[SET]
+        lib = (await call('lightroom_sync', entry_id=entry.entry_id))['libraries'][0]
+        check(lib['added'] == 0 and files(photo_dir) == expected and not (photo_dir / 'lr' / 'Far Trips').exists(),
+              f'set renamed back {lib} {files(photo_dir)}')
 
         # --- Settings: the folder can change after a confirmation, also during a sync (which stops);
         # the old folder is left as it is.
@@ -661,7 +680,7 @@ async def main():
         check(sorted((x['entry_id'], x['status']) for x in libs) == sorted([(entry.entry_id, 'ok'), (entry2.entry_id, 'ok')])
               and files(photo_dir, 'lr2') == {k.replace('lr/', 'lr2/').replace('-2', ''): v for k, v in expected.items()},
               f'two libraries {libs} {files(photo_dir, "lr2")}')
-        check(json.loads((photo_dir / 'lr2' / NAMES[LAKE] / '.sync.json').read_text())['owner'] == owner('acct-two'), 'second owner')
+        check(json.loads((photo_dir / 'lr2' / DIR[LAKE] / '.sync.json').read_text())['owner'] == owner('acct-two'), 'second owner')
         check(files(photo_dir) == expected, 'the second account touched the first one\'s folders')
         prevs = (await call('lightroom_preview'))['libraries']
         check(len(prevs) == 2 and all(p['kept'] == count for p in prevs), f'two previews {prevs}')
@@ -714,7 +733,8 @@ async def main():
         check(lib['status'] == 'ok' and lib['added'] == 0 and lib['moved'] == 0 and lib['removed'] == 0 and not fake.fetched(),
               f're-add synced {lib} {fake.renditions}')
         check(photo_bytes(photo_dir / 'lr') == folders_before and files(photo_dir) == expected, 're-add made new folders')
-        check(not any(p.name.endswith('-2') for p in (photo_dir / 'lr').iterdir() if p.name != f'{NAMES[PEAKS]}-2'), 'a "-2" folder')
+        check(not any(p.name.endswith('-2') for p in (photo_dir / 'lr').rglob('*')
+                      if p.is_dir() and p.relative_to(photo_dir / 'lr').as_posix() != f'{DIR[PEAKS]}-2'), 'a "-2" folder')
 
         # --- The albums entry still syncs with Lightroom loaded beside it.
         records = (await call('album_sync'))['albums']

@@ -8,7 +8,7 @@ Keep a photo folder in Home Assistant in step with shared Synology Photos albums
 Lightroom library. A Synology album is added by its share link, copied into its own folder as
 screen-sized JPEG files and updated on a timer; the share link is the only access, no Synology
 account or token is stored. A Lightroom library is read through your own Adobe sign-in: the photos
-that pass a filter you set are copied into one folder per Lightroom album.
+that pass a filter you set are copied into a folder tree that mirrors Lightroom's albums and sets.
 
 The integration fills a folder. Showing the photos (which one is drawn next, rotation, captions)
 is the job of a slideshow that reads that folder, for example the Ramka component of
@@ -263,8 +263,8 @@ folders below it.
 
 ## Lightroom library
 
-Reads an Adobe Lightroom (cloud) library, selects photos with a filter and copies them into one
-folder per Lightroom album. It is a second kind of entry, next to the Synology one; both can run at
+Reads an Adobe Lightroom (cloud) library, selects photos with a filter and copies them into a folder
+tree that mirrors Lightroom's albums and sets. It is a second kind of entry, next to the Synology one; both can run at
 the same time. Lightroom Classic (desktop catalogs) is not supported.
 
 The integration only reads. Every request to Lightroom is a `GET`; the only `POST` is the token
@@ -337,8 +337,17 @@ sync there is no library to count; Save still applies the filter.
 
 ### Folders and files
 
-- Albums: `<subfolder>/<album name>`. Photos in no album: `<subfolder>/<YYYY-MM>` of their capture
-  date. Without a subfolder the folders sit directly in the photo folder.
+- Albums: `<subfolder>/<set>/…/<album name>`, the album's path in Lightroom's album tree
+  (`2023/Iceland/Day 1`). Only album folders hold photos and the record `.sync.json`; set folders
+  are plain folders. Photos in no album: `<subfolder>/<YYYY-MM>` of their capture date. Without a
+  subfolder the folders sit directly in the photo folder.
+- An album renamed or moved in Lightroom, or a set renamed or moved, moves the album folders on the
+  next sync, with their photos; nothing is downloaded again. A set folder that such a move (or a
+  removal) leaves empty is deleted; one that still holds anything (a file of yours, a NAS's
+  `@eaDir`) stays, and so does any other empty folder. Folders from the earlier flat layout (one
+  folder per album) move into the tree the same way on the first sync after an update.
+- An album with the same name as a set beside it gets `-2`, so an album folder never holds another
+  album's folder.
 - Album names are cleaned like Synology ones, and a leading `@` is dropped (slideshows often skip
   folders starting with `.` or `@`). If two names collide or another folder has the name, the
   later one gets `-2` and a repair issue appears; its path is in the sensor's `path_collisions`.
