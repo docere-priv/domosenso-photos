@@ -67,7 +67,7 @@ def execute(pl, photo_dir, fetch=_fetch, free_floor=0):
 
 
 def run(photo_dir, placed_list, prefix='', listed=None, confirm=False, **kw):
-    folders = lrs.read_owned(photo_dir, prefix, OWNER)
+    folders = lrs.read_owned(photo_dir, prefix, OWNER, {p.key: p.folder for p in placed_list})
     pl = lrs.plan(placed_list, folders, len(placed_list) if listed is None else listed, confirm)
     return pl, execute(pl, photo_dir, **kw)
 
@@ -162,22 +162,28 @@ def test_plan_asset_in_two_owned_folders_removes_stale_copy():
     assert pl.hold is None and len(pl.remove) == 20
 
 
-def test_plan_same_key_in_two_folders_keeps_the_placed_one():
-    by_key = {'alb1': owned('alb1', 'Old', 1, 2), '\x00Trip': owned('alb1', 'Trip', 1)}
-    pl = lrs.plan([placed(1), placed(2)], by_key, 2, False)
-    # the other folder's items are stale copies: removed, never a move source, not counted
-    assert ids(pl.add) == ['as002'] and pl.move == [] and pl.rename == []
-    assert sorted(pl.remove) == [('\x00Old', 'as001'), ('\x00Old', 'as002')]
-    assert pl.owned['alb1'].path == 'Trip' and pl.owned['\x00Old'].path == 'Old'
+def test_read_owned_same_key_copy_is_left_alone(tmp_path):
+    run(tmp_path, [placed(1), placed(2)])
+    # the user copies the folder, marker included
+    (tmp_path / 'Copy').mkdir()
+    for f in (tmp_path / 'Trip').iterdir():
+        (tmp_path / 'Copy' / f.name).write_bytes(f.read_bytes())
+    before = {f.name: f.read_bytes() for f in (tmp_path / 'Copy').iterdir()}
+    folders = lrs.read_owned(tmp_path, '', OWNER, {'alb1': 'Trip'})
+    assert folders == {'alb1': lrs.OwnedFolder('alb1', 'Trip', marker(tmp_path / 'Trip')['items'])}
+    # a move out of the album, a removal, an add and an update: the copy is never touched
+    run(tmp_path, [placed(1, key='alb2', folder='Beach'), placed(3)])
+    run(tmp_path, [placed(3, changed='c2')])
+    assert photos(tmp_path / 'Trip') == ['2025-06-04_as003.jpg']
+    assert {f.name: f.read_bytes() for f in (tmp_path / 'Copy').iterdir()} == before
 
 
-def test_read_owned_same_key_twice_keeps_both(tmp_path):
+def test_read_owned_same_key_keeps_the_placed_one(tmp_path):
     for name in ('A', 'B'):
         (tmp_path / name).mkdir()
         (tmp_path / name / '.sync.json').write_text(json.dumps({'owner': OWNER, 'key': 'alb1', 'items': {}}))
-    folders = lrs.read_owned(tmp_path, '', OWNER)
-    assert folders['alb1'].path == 'A'
-    assert sorted(f.path for f in folders.values()) == ['A', 'B']
+    assert lrs.read_owned(tmp_path, '', OWNER)['alb1'].path == 'A'
+    assert lrs.read_owned(tmp_path, '', OWNER, {'alb1': 'B'}) == {'alb1': lrs.OwnedFolder('alb1', 'B', {})}
 
 
 def test_plan_album_rename_renames_folder():

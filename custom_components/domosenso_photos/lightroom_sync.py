@@ -15,7 +15,6 @@ from .lightroom_filter import Placed
 
 MASS_MIN = 20
 _MONTH = re.compile(r'\d{4}-\d{2}')
-_DUP = '\x00'  # dict key prefix of a second folder carrying an already seen key; never a real key
 
 
 class DiskFull(Exception):
@@ -37,8 +36,7 @@ class LrPlan:
     remove: list[tuple[str, str]]  # (key, asset id)
     rename: list[tuple[str, str, str]]  # (key, old path, new wanted path)
     hold: str | None
-    # The folders the plan was made against, so execute finds a key's path. A second folder with the
-    # same key (a damaged state) sits under _DUP + its path; the tuples above may name that dict key.
+    # The folders the plan was made against (one per key), so execute finds a key's path.
     owned: dict[str, OwnedFolder] = field(default_factory=dict)
 
 
@@ -71,11 +69,18 @@ def _present(folder: Path, items: dict) -> dict[str, dict]:
             if isinstance(v, dict) and _plain(v.get('name')) and (folder / v['name']).is_file()}
 
 
-def read_owned(photo_dir: Path, prefix: str, owner: str) -> dict[str, OwnedFolder]:
+def read_owned(photo_dir: Path, prefix: str, owner: str,
+               wanted: dict[str, str] | None = None) -> dict[str, OwnedFolder]:
+    """One owned folder per key. wanted: key -> placed folder, if known.
+
+    A second folder with the same key can only be a copy the user made: it is left out, so it is never
+    counted, moved from, renamed or emptied. The one kept is at the placement (or its -N suffix), else
+    the first by path.
+    """
     base = photo_dir / prefix if prefix else photo_dir
-    out: dict[str, OwnedFolder] = {}
+    groups: dict[str, list[OwnedFolder]] = {}
     if not base.is_dir():
-        return out
+        return {}
     for child in sorted(base.iterdir(), key=lambda c: c.name):
         path = f'{prefix}/{child.name}' if prefix else child.name
         if not child.is_dir() or not inside(photo_dir, path):
@@ -84,7 +89,13 @@ def read_owned(photo_dir: Path, prefix: str, owner: str) -> dict[str, OwnedFolde
         if not _ours(marker, owner):
             continue
         folder = OwnedFolder(marker['key'], path, _present(child, marker['items']))
-        out[folder.key if folder.key not in out else _DUP + path] = folder
+        groups.setdefault(folder.key, []).append(folder)
+    want = wanted or {}
+    out = {}
+    for key, group in groups.items():
+        w = want.get(key)
+        out[key] = (next((f for f in group if f.path == w), None)
+                    or next((f for f in group if w is not None and _in_place(f.path, w)), None) or group[0])
     return out
 
 
@@ -94,30 +105,12 @@ def _in_place(path: str, wanted: str) -> bool:
     return path == wanted or (rest.isdigit() and int(rest) >= 2)
 
 
-def _kept(owned: dict[str, OwnedFolder], wanted: dict[str, str]) -> tuple[dict[str, OwnedFolder], list[str]]:
-    """Per key the folder to keep (under the key) and the dict keys of the other same-key folders."""
-    by_key: dict[str, list[OwnedFolder]] = {}
-    for f in owned.values():
-        by_key.setdefault(f.key, []).append(f)
-    kept, stale = {}, []
-    for key, group in by_key.items():
-        group.sort(key=lambda f: f.path)
-        want = wanted.get(key)
-        best = (next((f for f in group if f.path == want), None)
-                or next((f for f in group if want is not None and _in_place(f.path, want)), None) or group[0])
-        kept[key] = best
-        stale += [_DUP + f.path for f in group if f is not best]
-    return kept, stale
-
-
 def plan(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int, confirm: bool) -> LrPlan:
     wanted: dict[str, Placed] = {}
     for p in placed:
         wanted.setdefault(p.photo.asset_id, p)
     folder_for = {p.key: p.folder for p in wanted.values()}
-    kept, stale_keys = _kept(owned, folder_for)
-    by_path = {f.path: f for f in owned.values()}
-    folders = kept | {dkey: by_path[dkey[len(_DUP):]] for dkey in stale_keys}
+    kept = folders = {f.key: f for f in owned.values()}  # read_owned already keeps one folder per key
 
     where: dict[str, list[str]] = {}  # asset id -> keys of kept folders holding it
     for key in sorted(kept):
@@ -141,8 +134,6 @@ def plan(placed: list[Placed], owned: dict[str, OwnedFolder], listed_assets: int
     for asset in gone:
         remove.append((where[asset][0], asset))
         stale += [(k, asset) for k in where[asset][1:]]
-    for dkey in stale_keys:
-        stale += [(dkey, asset) for asset in sorted(folders[dkey].items)]
 
     rename = [(key, f.path, folder_for[key]) for key, f in sorted(kept.items())
               if key in folder_for and not _in_place(f.path, folder_for[key])]
