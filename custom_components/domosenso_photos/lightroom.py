@@ -290,7 +290,8 @@ class LightroomManager:
                 return None
 
         run = await execute(lr_plan, self.photo_dir, self.owner, fetch, self._run_blocking, self.free_floor,
-                            dt_util.get_default_time_zone(), now, progress=self._report)
+                            dt_util.get_default_time_zone(), now, progress=self._report,
+                            prefix=self.prefix)
         skipped, skipped_at = lightroom_library.next_skips(
             run.skipped, library.photos, any(a in tried for a in run.skipped), self.data.get('skipped_at'), now)
         names = {a.id: a.name for a in library.albums.values()}

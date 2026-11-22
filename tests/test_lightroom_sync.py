@@ -63,14 +63,14 @@ async def _fetch(p):
     return JPEG
 
 
-def execute(pl, photo_dir, fetch=_fetch, free_floor=0):
-    return asyncio.run(lrs.execute(pl, photo_dir, OWNER, fetch, _direct, free_floor, timezone.utc, NOW))
+def execute(pl, photo_dir, fetch=_fetch, free_floor=0, prefix=''):
+    return asyncio.run(lrs.execute(pl, photo_dir, OWNER, fetch, _direct, free_floor, timezone.utc, NOW, prefix=prefix))
 
 
 def run(photo_dir, placed_list, prefix='', listed=None, confirm=None, **kw):
     folders = lrs.read_owned(photo_dir, prefix, OWNER)
     pl = lrs.plan(placed_list, folders, len(placed_list) if listed is None else listed, confirm)
-    return pl, execute(pl, photo_dir, **kw)
+    return pl, execute(pl, photo_dir, prefix=prefix, **kw)
 
 
 def marker(folder):
@@ -547,3 +547,107 @@ def test_execute_progress_counts_skipped(tmp_path):
 def test_execute_progress_nothing_to_do(tmp_path):
     run(tmp_path, [placed(1)])
     assert _progress_run(tmp_path, [placed(1)]) == []
+
+
+def _counting():
+    calls = []
+
+    async def fetch(p):
+        calls.append(p.photo.asset_id)
+        return JPEG
+    return calls, fetch
+
+
+def _keys(photo_dir, prefix=''):
+    return {k: f.path for k, f in lrs.read_owned(photo_dir, prefix, OWNER).items()}
+
+
+def test_read_owned_finds_nested_records(tmp_path):
+    run(tmp_path, [placed(1, key='k1', folder='Trips/Alps'), placed(2, key='k2', folder='Zebra')])
+    assert _keys(tmp_path) == {'k1': 'Trips/Alps', 'k2': 'Zebra'}
+
+
+def test_read_owned_skips_hidden_and_at_folders(tmp_path):
+    run(tmp_path, [placed(1, key='k1', folder='x'), placed(2, key='k2', folder='y')])
+    (tmp_path / '@eaDir').mkdir()
+    (tmp_path / '.hidden').mkdir()
+    (tmp_path / 'x').rename(tmp_path / '@eaDir' / 'x')
+    (tmp_path / 'y').rename(tmp_path / '.hidden' / 'y')
+    assert _keys(tmp_path) == {}
+
+
+def test_flat_folder_moves_into_the_tree(tmp_path):
+    run(tmp_path, [placed(1, key='alb1', folder='Day 1')])
+    calls, fetch = _counting()
+    run(tmp_path, [placed(1, key='alb1', folder='2023/Iceland/Day 1')], fetch=fetch)
+    assert photos(tmp_path / '2023/Iceland/Day 1') == ['2025-06-02_as001.jpg']
+    assert marker(tmp_path / '2023/Iceland/Day 1')['path'] == '2023/Iceland/Day 1'
+    assert not (tmp_path / 'Day 1').exists() and calls == []
+
+
+def test_set_rename_moves_albums_and_prunes(tmp_path):
+    run(tmp_path, [placed(1, key='k1', folder='Old/A'), placed(2, key='k2', folder='Old/B')])
+    run(tmp_path, [placed(1, key='k1', folder='New/A'), placed(2, key='k2', folder='New/B')])
+    assert _keys(tmp_path) == {'k1': 'New/A', 'k2': 'New/B'} and not (tmp_path / 'Old').exists()
+
+
+def test_prune_keeps_a_folder_with_other_content(tmp_path):
+    run(tmp_path, [placed(1, key='k1', folder='Old/A')])
+    (tmp_path / 'Old' / 'notes.txt').write_text('mine')
+    run(tmp_path, [placed(1, key='k1', folder='New/A')])
+    assert sorted(p.name for p in (tmp_path / 'Old').iterdir()) == ['notes.txt']
+
+
+def test_prune_stops_at_the_prefix(tmp_path):
+    run(tmp_path, [placed(1, key='k1', folder='lr/A/B'), placed(2, key='k2', folder='lr/C')], prefix='lr')
+    run(tmp_path, [placed(2, key='k2', folder='lr/C')], prefix='lr')
+    assert not (tmp_path / 'lr' / 'A').exists() and (tmp_path / 'lr' / 'C').is_dir()
+
+
+def test_prune_never_removes_the_prefix(tmp_path):
+    run(tmp_path, [placed(1, key='k1', folder='lr/A')], prefix='lr')
+    run(tmp_path, [placed(1, key='k1', folder='lr/B')], prefix='lr')
+    run(tmp_path, [], prefix='lr', listed=1)
+    assert (tmp_path / 'lr').is_dir()
+
+
+def test_unrelated_empty_folder_is_left(tmp_path):
+    (tmp_path / 'Empty').mkdir()
+    run(tmp_path, [placed(1, key='k1', folder='Old/A'), placed(2, key='k2', folder='B')])
+    run(tmp_path, [placed(1, key='k1', folder='New/A')])
+    assert (tmp_path / 'Empty').is_dir()
+
+
+def test_rename_ignores_eadir(tmp_path):
+    run(tmp_path, [placed(1, key='k1', folder='A')])
+    (tmp_path / 'A' / '@eaDir').mkdir()
+    run(tmp_path, [placed(1, key='k1', folder='Set/A')])
+    assert _keys(tmp_path) == {'k1': 'Set/A'} and (tmp_path / 'Set' / 'A' / '@eaDir').is_dir()
+
+
+def test_move_waits_for_an_album_folder_in_the_way(tmp_path):
+    # 'a-day' sorts first: its target lies inside the folder 'b-iceland' still occupies.
+    run(tmp_path, [placed(1, key='b-iceland', folder='Iceland'), placed(2, key='a-day', folder='Day')])
+    run(tmp_path, [placed(1, key='b-iceland', folder='2023/Iceland'), placed(2, key='a-day', folder='Iceland/Day')])
+    assert _keys(tmp_path) == {'b-iceland': '2023/Iceland', 'a-day': 'Iceland/Day'}
+    assert sorted(p.name for p in (tmp_path / 'Iceland').iterdir()) == ['Day']
+
+
+def test_new_album_never_inside_an_album_folder(tmp_path):
+    run(tmp_path, [placed(1, key='k1', folder='A')])
+    run(tmp_path, [placed(1, key='k1', folder='A'), placed(2, key='k2', folder='A/B')])
+    assert sorted(p.name for p in (tmp_path / 'A').iterdir() if p.is_dir()) == []
+
+
+def test_ambiguous_nested_copy_is_untouched(tmp_path):
+    run(tmp_path, [placed(1, key='k1', folder='A/X')])
+    (tmp_path / 'B').mkdir()
+    _copy(tmp_path / 'A' / 'X', tmp_path / 'B' / 'X')
+    m = marker(tmp_path / 'B' / 'X')
+    m['path'] = 'C/X'  # a copy that records neither place: two candidates, no self-recorded one
+    (tmp_path / 'B' / 'X' / '.sync.json').write_text(json.dumps(m))
+    (tmp_path / 'A' / 'X' / '.sync.json').write_text(json.dumps({**m, 'path': 'D/X'}))
+    trees = {n: _tree(tmp_path / n / 'X') for n in ('A', 'B')}
+    pl, _ = run(tmp_path, [placed(1, key='k1', folder='E/X')])
+    assert pl.rename == [] and pl.ambiguous == [('k1', ['A/X', 'B/X'])]
+    assert {n: _tree(tmp_path / n / 'X') for n in ('A', 'B')} == trees

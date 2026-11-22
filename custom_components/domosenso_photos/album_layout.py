@@ -71,3 +71,22 @@ def make_dirs(photo_dir: Path, path: str) -> None:
 
 def local_filename(item: RemoteItem) -> str:
     return f'{sanitize_name(item.filename.rsplit(".", 1)[0])}_{item.id}.jpg'
+
+
+def prune_empty(photo_dir: Path, base: str, path: str) -> None:
+    """Remove path's parent folders, nearest first, while each is empty and lies below photo_dir/base.
+
+    Only folders a move or removal just emptied are passed here; anything in a folder (a hidden
+    file, a NAS's @eaDir) keeps it.
+    """
+    root = (photo_dir / base).resolve() if base else photo_dir.resolve()
+    current = (photo_dir / path).parent
+    while True:
+        resolved = current.resolve()
+        if resolved == root or not resolved.is_relative_to(root):
+            return
+        try:
+            current.rmdir()  # only succeeds on an empty folder
+        except OSError:
+            return
+        current = current.parent

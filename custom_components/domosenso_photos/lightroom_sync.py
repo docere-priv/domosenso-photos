@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .album_files import MARKER, free_bytes, read_marker, remove_photo, write_marker, write_photo
-from .album_layout import PhotoDirMissing, inside, make_dirs, rename_target, resolve_path
+from .album_layout import PhotoDirMissing, inside, make_dirs, prune_empty, rename_target, resolve_path
 from .lightroom_filter import Placed
 
 MASS_MIN = 20
@@ -86,6 +86,24 @@ class Owned(dict):
         self.ambiguous = ambiguous or []  # (key, folder paths)
 
 
+def _hidden(name: str) -> bool:
+    return name.startswith(('.', '@'))  # hidden folders, and a NAS's @eaDir thumbnails
+
+
+def _folders_below(base: Path):
+    """Every folder below base, sorted, depth first; hidden and @ folders and links are skipped. A
+    folder holding a record is not descended into: an album folder never holds another album."""
+    try:
+        children = sorted((c for c in base.iterdir() if c.is_dir() and not c.is_symlink() and not _hidden(c.name)),
+                          key=lambda c: c.name)
+    except OSError:
+        return
+    for child in children:
+        yield child
+        if not (child / MARKER).exists():
+            yield from _folders_below(child)
+
+
 def read_owned(photo_dir: Path, prefix: str, owner: str) -> Owned:
     """The folders this owner manages, one per key; no deletion ever depends on guessing a copy.
 
@@ -98,9 +116,10 @@ def read_owned(photo_dir: Path, prefix: str, owner: str) -> Owned:
     groups: dict[str, list[tuple[OwnedFolder, bool]]] = {}
     if not base.is_dir():
         return Owned()
-    for child in sorted(base.iterdir(), key=lambda c: c.name):
-        path = f'{prefix}/{child.name}' if prefix else child.name
-        if not child.is_dir() or not inside(photo_dir, path):
+    for child in _folders_below(base):
+        rel = child.relative_to(base).as_posix()
+        path = f'{prefix}/{rel}' if prefix else rel
+        if not inside(photo_dir, path):
             continue
         marker = read_marker(child)
         if not _ours(marker, owner):
@@ -229,6 +248,7 @@ class _Exec:
     run_blocking: RunBlocking
     now: int
     paths: dict[str, str] = field(default_factory=dict)  # plan dict key -> current path
+    prefix: str = ''  # emptied folders are pruned up to here, never above
     markers: dict[str, dict | None] = field(default_factory=dict)  # plan dict key -> marker read from disk
 
     async def io(self, fn, *args):
@@ -254,24 +274,38 @@ class _Exec:
         marker['path'], marker['last_sync'] = self.paths[dkey], self.now
         write_marker(self.photo_dir / self.paths[dkey], marker)
 
-    def rename(self, dkey: str, old: str, wanted: str) -> None:
+    def in_album(self, path: str) -> bool:
+        """True when a folder above path holds one of this owner's records: never write inside it."""
+        parent = PurePosixPath(path).parent
+        while str(parent) not in ('.', ''):
+            if _ours(read_marker(self.photo_dir / parent), self.owner):
+                return True
+            parent = parent.parent
+        return False
+
+    def rename(self, dkey: str, old: str, wanted: str) -> bool:
+        """Move the folder to its wanted path; False when a folder of ours is in the way (try later)."""
         if self.paths.get(dkey) != old or not inside(self.photo_dir, wanted) or self.load(dkey) is None:
-            return
-        if any(c.is_dir() for c in (self.photo_dir / old).iterdir()):
-            return  # a subfolder is not ours (another source's folder, say): never carried along
+            return True
+        if any(c.is_dir() and not _hidden(c.name) for c in (self.photo_dir / old).iterdir()):
+            return True  # a subfolder is not ours (another source's folder, say): never carried along
+        if self.in_album(wanted):
+            return False
         new = rename_target(self.photo_dir, old, wanted)
         if new == old:
-            return
+            return True
         make_dirs(self.photo_dir, str(PurePosixPath(new).parent))
         (self.photo_dir / old).rename(self.photo_dir / new)
         self.paths[dkey] = new
         self._write_marker(dkey)  # the marker records where the folder now is
+        prune_empty(self.photo_dir, self.prefix, old)
+        return True
 
     def target(self, p: Placed) -> tuple[str, dict] | None:
         """The folder a placed photo is written to, created when this key has none; None if unsafe."""
         if self.load(p.key) is not None:
             return self.paths[p.key], self.markers[p.key]
-        if not inside(self.photo_dir, p.folder):
+        if not inside(self.photo_dir, p.folder) or self.in_album(p.folder):
             return None
         path = resolve_path(self.photo_dir, p.folder, self.owner, p.key)
         if not inside(self.photo_dir, path):
@@ -291,6 +325,7 @@ class _Exec:
         if not marker['items'] and [c.name for c in folder.iterdir()] == [MARKER]:
             (folder / MARKER).unlink()
             folder.rmdir()
+            prune_empty(self.photo_dir, self.prefix, self.paths[dkey])
             self.markers[dkey] = None
             del self.paths[dkey]
 
@@ -322,15 +357,16 @@ class _Exec:
 
 async def execute(plan: LrPlan, photo_dir: Path, owner: str, fetch: Callable[[Placed], Awaitable[bytes | None]],
                   run_blocking: RunBlocking, free_floor: int, tz: tzinfo, now: int,
-                  progress: Callable[[str, int, int], None] | None = None) -> RunResult:
+                  progress: Callable[[str, int, int], None] | None = None, prefix: str = '') -> RunResult:
     """Apply the plan; raises PhotoDirMissing (nothing touched) or DiskFull (stops before the next write)."""
     if not await run_blocking(photo_dir.is_dir):  # unmounted storage: touch nothing, never re-create it
         raise PhotoDirMissing
-    run = _Exec(plan, photo_dir, owner, run_blocking, now, {k: f.path for k, f in plan.owned.items()})
+    run = _Exec(plan, photo_dir, owner, run_blocking, now, {k: f.path for k, f in plan.owned.items()}, prefix=prefix)
     result = RunResult()
     try:
-        for dkey, old, wanted in plan.rename:
-            await run.io(run.rename, dkey, old, wanted)
+        waiting = [r for r in plan.rename if not await run.io(run.rename, *r)]
+        for r in waiting:  # the folder in the way has usually moved out by now; else the next sync
+            await run.io(run.rename, *r)
         writes = ([(p, None, 'added') for p in plan.add] + [(p, None, 'updated') for p in plan.update]
                   + [(p, old, 'moved') for p, old in plan.move])
         total = len(writes) + len(plan.remove)
